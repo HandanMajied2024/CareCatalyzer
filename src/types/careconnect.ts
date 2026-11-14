@@ -13,6 +13,7 @@ export type CallStatus =
   | 'Pending Call'
   | 'Calling Live'
   | 'Confirmed Attending'
+  | 'Appointment Cancelled'
   | 'Follow-Up Required (Human Callback Queued)'
   | 'No Pick-Up';
 
@@ -103,7 +104,13 @@ export interface FocusRegionMeta {
 
 export interface CallTurnApiResponse {
   aiReply: string;
-  outcome: 'continue_probe' | 'confirmed' | 'declined_classified' | 'no_answer';
+  outcome:
+    | 'continue_probe'
+    | 'cancellation_reason_requested'
+    | 'cancelled'
+    | 'confirmed'
+    | 'declined_classified'
+    | 'no_answer';
   needsProbe: boolean;
   barrierCategory: BarrierCategory | null;
   barrierSummary: string | null;

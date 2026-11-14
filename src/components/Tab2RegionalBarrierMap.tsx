@@ -145,7 +145,7 @@ export const Tab2RegionalBarrierMap: React.FC<Tab2RegionalBarrierMapProps> = ({
               Aggregate-Only Regional View · Privacy Guardrail Active
             </span>
             <span className="text-slate-600 ml-2">
-              Individual patient names &amp; transcripts are hidden; subgroups with n &lt; 5 are
+              This summary omits patient names and transcripts; subgroups with n &lt; 5 are
               suppressed.
             </span>
           </div>
@@ -494,7 +494,7 @@ export const Tab2RegionalBarrierMap: React.FC<Tab2RegionalBarrierMapProps> = ({
                   </div>
 
                   <div className="bg-slate-50 border border-slate-200 rounded px-3 py-2">
-                    <div className="text-[10px] text-slate-500">Goal 3 Delay Risk</div>
+                    <div className="text-[10px] text-slate-500">Demo timing alerts</div>
                     <div className="mt-0.5 text-lg font-bold font-mono tabular-nums text-orange-700">
                       {agg.goal3DelayRiskPct}%
                     </div>

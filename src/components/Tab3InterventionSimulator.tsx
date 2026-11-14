@@ -30,7 +30,7 @@ interface Tab3InterventionSimulatorProps {
     intervention: InterventionComparison,
     severeWeatherActive: boolean
   ) => void;
-  onReturnToTab1: () => void;
+  onReturnToPatients: () => void;
 }
 
 export const Tab3InterventionSimulator: React.FC<Tab3InterventionSimulatorProps> = ({
@@ -41,7 +41,7 @@ export const Tab3InterventionSimulator: React.FC<Tab3InterventionSimulatorProps>
   onChangeRegion,
   onToggleSevereWeather,
   onDeployIntervention,
-  onReturnToTab1,
+  onReturnToPatients,
 }) => {
   const [monthlyBudgetEur, setMonthlyBudgetEur] = useState<number>(32000);
   const [adoptionPct, setAdoptionPct] = useState<number>(80);
@@ -140,7 +140,7 @@ export const Tab3InterventionSimulator: React.FC<Tab3InterventionSimulatorProps>
               Scenario &amp; Severe Weather Stress-Test Controls
             </h2>
             <p className="text-xs text-slate-500 mt-0.5">
-              Live baseline rates synced from Tab 1 &amp; Tab 2 · Synthetic model estimates include
+              Baseline rates from the demo patient cohort · Synthetic model estimates include
               explicit 95% confidence bands
             </p>
           </div>
@@ -190,7 +190,7 @@ export const Tab3InterventionSimulator: React.FC<Tab3InterventionSimulatorProps>
               {liveRegionStats.transportWeatherRate} / 100 Transport+Weather
             </div>
             <div className="text-[11px] text-slate-600 mt-0.5">
-              {liveRegionStats.followUpQueued} callbacks queued · {liveRegionStats.goal3RiskCount} Goal 3 at-risk
+              {liveRegionStats.followUpQueued} callbacks queued · {liveRegionStats.goal3RiskCount} with timing alerts
             </div>
           </div>
 
@@ -388,10 +388,10 @@ export const Tab3InterventionSimulator: React.FC<Tab3InterventionSimulatorProps>
             </div>
             <button
               type="button"
-              onClick={onReturnToTab1}
+              onClick={onReturnToPatients}
               className="text-xs font-semibold text-sky-800 hover:underline cursor-pointer"
             >
-              Inspect Updated Patient Tasks in Tab 1 &rarr;
+              View updated patients &uarr;
             </button>
           </div>
 

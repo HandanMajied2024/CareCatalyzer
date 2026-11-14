@@ -82,6 +82,7 @@ export function computeGoal3AtRisk(params: {
   targetDaysTotal: number;
   callStatus: CallStatus;
 }): boolean {
+  if (params.callStatus === 'Appointment Cancelled') return true;
   const projectedDays = params.daysElapsed + params.daysUntilAppointment;
   if (params.callStatus === 'Follow-Up Required (Human Callback Queued)') {
     return projectedDays + 5 > params.targetDaysTotal;
@@ -215,12 +216,22 @@ export function applyCallOutcomeToPatient(
     deltaFromBaseline = -14;
     aiDetectedBarrier = null;
     verifiedBarrier = null;
-    barrierSummary = 'Patient confirmed attendance; Goal 3 fast-track slot locked.';
+    barrierSummary = 'Patient confirmed attendance. The fast-track appointment is held.';
     recommendedAction =
       patient.distanceKm >= 120
         ? 'Confirm Kela travel reimbursement eligibility via SMS reminder.'
         : 'Standard digital check-in active; no pathway delay expected.';
     clinicalNurseAlert = false;
+  } else if (outcome.callStatus === 'Appointment Cancelled') {
+    deltaFromBaseline = 20;
+    const cat = outcome.barrierCategory ?? 'Other';
+    aiDetectedBarrier = cat;
+    verifiedBarrier = cat;
+    humanCoordinatorRequested = true;
+    barrierSummary = outcome.barrierSummary ?? 'Patient cancelled after being asked for the reason.';
+    recommendedAction =
+      outcome.recommendedAction ??
+      'Appointment cancelled in the demo schedule; notify the care team and offer rescheduling support.';
   } else if (outcome.callStatus === 'No Pick-Up') {
     deltaFromBaseline = 14;
     humanCoordinatorRequested = true;

@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
+  ChevronDown,
   Clock,
   Mic,
   MicOff,
@@ -148,6 +149,35 @@ function nowTime(): string {
   });
 }
 
+function microphoneErrorMessage(error: unknown): string {
+  if (!window.isSecureContext) {
+    return 'Microphone access requires a secure page. Open http://localhost:3000 instead of the WSL IP address.';
+  }
+  if (error instanceof DOMException) {
+    if (error.name === 'NotAllowedError' || error.name === 'SecurityError') {
+      return 'Microphone permission is blocked. Allow microphone access for localhost in the browser site settings, reload, and try again.';
+    }
+    if (error.name === 'NotFoundError' || error.name === 'DevicesNotFoundError') {
+      return 'No microphone was found. Connect or enable a microphone, then try again.';
+    }
+    if (error.name === 'NotReadableError' || error.name === 'TrackStartError') {
+      return 'The microphone is being used by another application. Close the other application and try again.';
+    }
+  }
+  return 'The browser could not start the microphone. Check the site microphone permission and try again.';
+}
+
+function speechRecognitionErrorMessage(error?: string): string {
+  if (error === 'not-allowed' || error === 'service-not-allowed') {
+    return 'Microphone permission is blocked. Allow it for localhost, reload, and try again.';
+  }
+  if (error === 'audio-capture') return 'No working microphone was detected.';
+  if (error === 'network') {
+    return 'Browser speech recognition is unavailable. Type your reply below instead.';
+  }
+  return 'Browser speech recognition stopped. Type your reply below or retry the microphone.';
+}
+
 export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
   patients,
   selectedPatientId,
@@ -166,6 +196,8 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
   const [tierFilter, setTierFilter] = useState<RiskTier | 'ALL'>('ALL');
   const [statusFilter, setStatusFilter] = useState<CallStatus | 'ALL'>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
+  const [detailsOpen, setDetailsOpen] = useState(true);
+  const detailsPanelRef = useRef<HTMLElement | null>(null);
 
   const [voiceMode, setVoiceMode] = useState<'idle' | 'gemini-live' | 'web-speech' | 'guided'>(
     'idle'
@@ -182,6 +214,7 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
   const micStreamRef = useRef<MediaStream | null>(null);
   const micCtxRef = useRef<AudioContext | null>(null);
   const micProcRef = useRef<ScriptProcessorNode | null>(null);
+  const micSendEnabledRef = useRef(false);
   const speechRecRef = useRef<SpeechRecognitionInstance | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
 
@@ -198,6 +231,7 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
 
   const liveAiBufferRef = useRef('');
   const liveUserBufferRef = useRef('');
+  const pendingTypedLiveLineRef = useRef<TranscriptLine | null>(null);
 
   const filteredQueue = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -218,10 +252,14 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
   }, [patients, regionFilter, stageFilter, tierFilter, statusFilter, searchQuery]);
 
   useEffect(() => {
-    transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [patient.transcript.length]);
+    if (detailsOpen) {
+      transcriptEndRef.current?.scrollIntoView({ block: 'nearest' });
+    }
+  }, [detailsOpen, patient.transcript.length]);
 
   const cleanupMediaAndSockets = () => {
+    micSendEnabledRef.current = false;
+    pendingTypedLiveLineRef.current = null;
     if (micProcRef.current) {
       try {
         micProcRef.current.disconnect();
@@ -298,6 +336,67 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
     window.setTimeout(() => setIsAiSpeaking(false), 3200);
   };
 
+  const classifyCompletedLiveTurn = async (
+    target: PatientRecord,
+    transcript: TranscriptLine[],
+    latestPatientText: string
+  ) => {
+    setIsProcessingTurn(true);
+    try {
+      const region = FOCUS_REGIONS[target.regionId];
+      const response = await fetch('/api/classify-call', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          patient: {
+            id: target.id,
+            name: target.name,
+            age: target.age,
+            municipality: target.municipality,
+            regionId: target.regionId,
+            hubHospital: region.hubHospital,
+            distanceKm: target.distanceKm,
+            pathwayStage: target.pathwayStage,
+            cancerDiagnosis: target.cancerDiagnosis,
+            cancerStage: target.cancerStage,
+            primaryLanguage: target.primaryLanguage,
+            appointmentType: target.appointmentType,
+            appointmentTimeLabel: target.appointmentTimeLabel,
+          },
+          transcript,
+          summaryText: latestPatientText,
+        }),
+      });
+      if (!response.ok) {
+        const failure = await response.json().catch(() => ({}));
+        throw new Error(failure.error || 'Gemini could not classify the completed turn.');
+      }
+      const data = (await response.json()) as CallTurnApiResponse;
+      if (data.outcome === 'cancellation_reason_requested') {
+        setStatusNote('Cancellation requested — waiting for the patient’s reason.');
+      } else if (data.outcome === 'cancelled') {
+        onApplyOutcome(target.id, {
+          callStatus: 'Appointment Cancelled',
+          barrierCategory: data.barrierCategory ?? 'Other',
+          barrierSummary: data.barrierSummary ?? latestPatientText,
+          recommendedAction: data.recommendedAction,
+          clinicalNurseAlert: data.clinicalNurseAlert,
+          humanCoordinatorRequested: true,
+        });
+        setStatusNote('Appointment cancelled after the reason was requested.');
+        cleanupMediaAndSockets();
+        setVoiceMode('idle');
+        onEndCall();
+      }
+    } catch (error) {
+      setStatusNote(
+        error instanceof Error ? error.message : 'Gemini could not classify the completed turn.'
+      );
+    } finally {
+      setIsProcessingTurn(false);
+    }
+  };
+
   const evaluateTurnWithBackend = async (
     targetPatient: PatientRecord,
     patientUtterance: string
@@ -361,7 +460,10 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
         }),
       });
 
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      if (!resp.ok) {
+        const failure = await resp.json().catch(() => ({}));
+        throw new Error(failure.error || 'Gemini could not respond. Please try again.');
+      }
       const data = (await resp.json()) as CallTurnApiResponse;
 
       onAppendTranscript(targetPatient.id, {
@@ -376,10 +478,26 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
       voiceAudio.speakText(data.aiReply);
       window.setTimeout(() => setIsAiSpeaking(false), 3000);
 
-      if (data.outcome === 'continue_probe') {
-        setStatusNote(
-          'AI Probing: Refused vague cancellation — keeping appointment held until barrier is clarified.'
-        );
+      if (data.outcome === 'cancellation_reason_requested') {
+        setStatusNote('Cancellation requested — tell Gemini the reason to complete it.');
+      } else if (data.outcome === 'continue_probe') {
+        setStatusNote('Gemini is asking one follow-up question.');
+      } else if (data.outcome === 'cancelled') {
+        onApplyOutcome(targetPatient.id, {
+          callStatus: 'Appointment Cancelled',
+          barrierCategory: data.barrierCategory ?? 'Other',
+          barrierSummary: data.barrierSummary ?? patientUtterance,
+          recommendedAction: data.recommendedAction,
+          clinicalNurseAlert: data.clinicalNurseAlert,
+          humanCoordinatorRequested: true,
+        });
+        voiceAudio.playOutcomeTone('escalated');
+        setStatusNote('Appointment cancelled after the reason was requested.');
+        window.setTimeout(() => {
+          cleanupMediaAndSockets();
+          setVoiceMode('idle');
+          onEndCall();
+        }, 2600);
       } else if (data.outcome === 'confirmed') {
         onApplyOutcome(targetPatient.id, {
           callStatus: 'Confirmed Attending',
@@ -389,7 +507,7 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
           clinicalNurseAlert: false,
         });
         voiceAudio.playOutcomeTone('confirmed');
-        setStatusNote('Confirmed Attending · Risk score lowered (-14 pts) · Goal 3 on track.');
+        setStatusNote('Confirmed attending. The outreach score was updated.');
         cleanupMediaAndSockets();
         setVoiceMode('idle');
         onEndCall();
@@ -451,10 +569,10 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
           }
         }
       };
-      rec.onerror = () => {
+      rec.onerror = (event) => {
         setMicActive(false);
         setVoiceMode('guided');
-        setStatusNote('Mic unavailable — use Simulated Patient Voice Replies or text box below.');
+        setStatusNote(speechRecognitionErrorMessage(event.error));
       };
       rec.onend = () => setMicActive(false);
       rec.start();
@@ -470,24 +588,46 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
   const handleStartLiveMicCall = async () => {
     cleanupMediaAndSockets();
     const target = activePatientRef.current;
-    onStartCall(target.id);
-    voiceAudio.playDialTone();
-    setStatusNote('Connecting microphone & Gemini Live Voice (gemini-3.8-live)...');
+    setStatusNote('Checking Gemini connection…');
+    try {
+      const response = await fetch('/api/health');
+      if (!response.ok) throw new Error('Unable to reach the Gemini server.');
+      const health = await response.json();
+      if (!health.geminiConfigured) throw new Error('Add GEMINI_API_KEY to the project .env file and restart the server.');
+    } catch (error) {
+      setStatusNote(error instanceof Error ? error.message : 'Unable to reach the Gemini server.');
+      return;
+    }
+    setStatusNote('Connecting to Gemini Live…');
 
     let micStream: MediaStream | null = null;
     try {
       if (navigator.mediaDevices?.getUserMedia) {
-        micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        micStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            channelCount: 1,
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        });
         micStreamRef.current = micStream;
+      } else {
+        throw new DOMException('getUserMedia is unavailable', 'NotSupportedError');
       }
-    } catch {
-      micStream = null;
+    } catch (error) {
+      setVoiceMode('idle');
+      setStatusNote(microphoneErrorMessage(error));
+      return;
     }
 
     if (!micStream) {
-      startWebSpeechFallback(target);
+      setStatusNote('No active microphone stream was returned by the browser.');
       return;
     }
+
+    onStartCall(target.id);
+    voiceAudio.playDialTone();
 
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${proto}//${window.location.host}/api/live-call`);
@@ -525,34 +665,60 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
           type?: string;
           data?: string;
           text?: string;
+          reason?: string;
         };
+
+        if (msg.type === 'error') {
+          switchedToFallback = true;
+          cleanupMediaAndSockets();
+          setVoiceMode('idle');
+          onEndCall();
+          setStatusNote(msg.reason || 'Gemini is unavailable. Check the server configuration.');
+          return;
+        }
 
         if (msg.type === 'ready') {
           setVoiceMode('gemini-live');
-          setStatusNote('Gemini Live (gemini-3.8-live) bidirectional voice active.');
+          micSendEnabledRef.current = true;
+          setStatusNote('Gemini Live connected — you can interrupt at any time.');
           const AudioCtx =
             window.AudioContext ||
             (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
           if (AudioCtx && micStreamRef.current) {
-            const ctx = new AudioCtx({ sampleRate: 16000 });
+            const ctx = new AudioCtx();
+            void ctx.resume();
             micCtxRef.current = ctx;
             const src = ctx.createMediaStreamSource(micStreamRef.current);
             const proc = ctx.createScriptProcessor(4096, 1, 1);
             micProcRef.current = proc;
             proc.onaudioprocess = (e) => {
-              if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+              if (
+                !micSendEnabledRef.current ||
+                !wsRef.current ||
+                wsRef.current.readyState !== WebSocket.OPEN
+              ) return;
               const pcmBase64 = float32ToPcm16Base64(e.inputBuffer.getChannelData(0));
-              wsRef.current.send(JSON.stringify({ type: 'audio', data: pcmBase64 }));
+              wsRef.current.send(
+                JSON.stringify({
+                  type: 'audio',
+                  data: pcmBase64,
+                  sampleRate: ctx.sampleRate,
+                })
+              );
             };
             src.connect(proc);
             proc.connect(ctx.destination);
             setMicActive(true);
+          } else {
+            cleanupMediaAndSockets();
+            setStatusNote('This browser does not support live microphone audio.');
           }
           return;
         }
 
         if (msg.type === 'audio' && msg.data) {
           setIsAiSpeaking(true);
+          setStatusNote('Gemini is speaking — you can interrupt.');
           voiceAudio.enqueuePcm24k(msg.data);
           return;
         }
@@ -569,23 +735,47 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
 
         if (msg.type === 'turn_complete') {
           setIsAiSpeaking(false);
+          const completedTranscript = [...activePatientRef.current.transcript];
+          const pendingTypedLine = pendingTypedLiveLineRef.current;
+          const liveUserText =
+            liveUserBufferRef.current.trim() || pendingTypedLine?.text.trim() || '';
+          const liveAiText = liveAiBufferRef.current.trim();
           if (liveUserBufferRef.current.trim()) {
-            onAppendTranscript(activePatientRef.current.id, {
+            const patientLine: TranscriptLine = {
               id: `pat-live-${Date.now()}`,
               speaker: 'Patient',
-              text: liveUserBufferRef.current.trim(),
+              text: liveUserText,
               timestamp: nowTime(),
-            });
+            };
+            completedTranscript.push(patientLine);
+            onAppendTranscript(activePatientRef.current.id, patientLine);
             liveUserBufferRef.current = '';
+          } else if (
+            pendingTypedLine &&
+            !completedTranscript.some((line) => line.id === pendingTypedLine.id)
+          ) {
+            completedTranscript.push(pendingTypedLine);
           }
-          if (liveAiBufferRef.current.trim()) {
-            onAppendTranscript(activePatientRef.current.id, {
+          pendingTypedLiveLineRef.current = null;
+          if (liveAiText) {
+            const aiLine: TranscriptLine = {
               id: `ai-live-${Date.now()}`,
               speaker: 'AI Coordinator',
-              text: liveAiBufferRef.current.trim(),
+              text: liveAiText,
               timestamp: nowTime(),
-            });
+            };
+            completedTranscript.push(aiLine);
+            onAppendTranscript(activePatientRef.current.id, aiLine);
             liveAiBufferRef.current = '';
+          }
+          micSendEnabledRef.current = true;
+          setStatusNote('Listening — speak now or interrupt the next response.');
+          if (liveUserText) {
+            void classifyCompletedLiveTurn(
+              activePatientRef.current,
+              completedTranscript,
+              liveUserText
+            );
           }
           return;
         }
@@ -593,6 +783,8 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
         if (msg.type === 'interrupted') {
           voiceAudio.stopLivePlayback();
           setIsAiSpeaking(false);
+          micSendEnabledRef.current = true;
+          setStatusNote('Listening — speak now.');
           return;
         }
 
@@ -634,6 +826,7 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
   const handleHangUpAndClassify = async () => {
     const target = activePatientRef.current;
     const hadPatientLines = target.transcript.some((t) => t.speaker === 'Patient');
+    let completionNote = 'Call finished.';
 
     if (voiceMode === 'gemini-live' && hadPatientLines) {
       setIsProcessingTurn(true);
@@ -661,9 +854,23 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
             transcript: target.transcript,
           }),
         });
+        if (!resp.ok) {
+          const failure = await resp.json().catch(() => ({}));
+          throw new Error(failure.error || 'Gemini could not summarize the call.');
+        }
         if (resp.ok) {
           const data = (await resp.json()) as CallTurnApiResponse;
-          if (data.outcome === 'confirmed') {
+          if (data.outcome === 'cancelled') {
+            onApplyOutcome(target.id, {
+              callStatus: 'Appointment Cancelled',
+              barrierCategory: data.barrierCategory ?? 'Other',
+              barrierSummary: data.barrierSummary,
+              recommendedAction: data.recommendedAction,
+              clinicalNurseAlert: data.clinicalNurseAlert,
+              humanCoordinatorRequested: true,
+            });
+            completionNote = 'Appointment cancelled after the reason was requested.';
+          } else if (data.outcome === 'confirmed') {
             onApplyOutcome(target.id, {
               callStatus: 'Confirmed Attending',
               barrierSummary: data.barrierSummary,
@@ -680,6 +887,8 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
             });
           }
         }
+      } catch (error) {
+        completionNote = error instanceof Error ? error.message : 'Gemini could not summarize the call.';
       } finally {
         setIsProcessingTurn(false);
       }
@@ -688,7 +897,7 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
     cleanupMediaAndSockets();
     setVoiceMode('idle');
     onEndCall();
-    setStatusNote('Call finished.');
+    setStatusNote(completionNote);
   };
 
   const handleSimulatedReply = async (utterance: string) => {
@@ -709,12 +918,15 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
     if (!trimmed) return;
     setManualInput('');
     if (voiceMode === 'gemini-live' && wsRef.current?.readyState === WebSocket.OPEN) {
-      onAppendTranscript(patient.id, {
+      const typedLine: TranscriptLine = {
         id: `pat-txt-${Date.now()}`,
         speaker: 'Patient',
         text: trimmed,
         timestamp: nowTime(),
-      });
+      };
+      pendingTypedLiveLineRef.current = typedLine;
+      onAppendTranscript(patient.id, typedLine);
+      micSendEnabledRef.current = false;
       wsRef.current.send(JSON.stringify({ type: 'text', text: trimmed }));
       return;
     }
@@ -731,12 +943,31 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
   const tierMeta = getTierMeta(patient.riskTier);
   const regionMeta = FOCUS_REGIONS[patient.regionId];
   const waveActive = isLiveCalling || isAiSpeaking || micActive;
-  const projectedDays = patient.daysElapsed + patient.daysUntilAppointment;
+  const { riskBreakdown } = patient;
+  const riskFactors = [
+    ['Care step and cancer stage', riskBreakdown.pathwayUrgencyPoints, patient.pathwayStage + ' and recorded cancer stage (' + patient.cancerStage + ').'],
+    ['Age and G8 screening', riskBreakdown.ageFrailtyPoints, 'Age ' + patient.age + ' and G8 score ' + patient.g8FrailtyScore + '/17. The model gives more points for older age bands and lower G8 scores.'],
+    ['Travel distance', riskBreakdown.distanceWeatherPoints, patient.distanceKm + ' km to the assigned care hub in this scenario. Points use distance bands.'],
+    ['Access support', riskBreakdown.equityLanguagePoints, 'Recorded language barrier, financial vulnerability, or accessibility need.'],
+    ['Missed calls and time remaining', riskBreakdown.historyMissedPoints, patient.priorMissedCalls + ' prior missed calls recorded. Points also increase when the booking is close to or past the target.'],
+  ] as const;
+
+  function togglePatientDetails(patientId: string) {
+    if (detailsOpen && patientId === patient.id) {
+      setDetailsOpen(false);
+      return;
+    }
+    onSelectPatient(patientId);
+    setDetailsOpen(true);
+    if (!window.matchMedia('(min-width: 1024px)').matches) {
+      requestAnimationFrame(() => detailsPanelRef.current?.scrollIntoView({ block: 'start' }));
+    }
+  }
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-[44fr_56fr] gap-4 items-stretch">
+    <div className={`grid grid-cols-1 gap-4 items-start ${detailsOpen ? 'lg:grid-cols-[44fr_56fr]' : ''}`}>
       {/* Left: Filterable Lung Cancer Fast-Track Triage Queue */}
-      <section className="bg-white border border-slate-200 rounded-lg flex flex-col overflow-hidden h-[700px] shadow-2xs">
+      <section className={`min-w-0 bg-white border border-slate-200 rounded-lg flex flex-col overflow-hidden shadow-2xs ${detailsOpen ? 'max-h-[420px] lg:max-h-none lg:h-[700px]' : ''}`}>
         <div className="px-4 py-3 border-b border-slate-200 bg-slate-50/70 space-y-2.5">
           <div className="flex items-center justify-between gap-2">
             <div>
@@ -749,7 +980,7 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-1.5">
+          <div className={`grid grid-cols-2 gap-1.5 ${detailsOpen ? '' : 'md:grid-cols-6'}`}>
             <div className="relative col-span-2">
               <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
               <input
@@ -811,14 +1042,15 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
               <option value="Pending Call">Pending Call</option>
               <option value="Follow-Up Required (Human Callback Queued)">Follow-Up Required</option>
               <option value="Confirmed Attending">Confirmed Attending</option>
+              <option value="Appointment Cancelled">Appointment Cancelled</option>
               <option value="No Pick-Up">No Pick-Up</option>
             </select>
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto clinical-scroll divide-y divide-slate-200">
+        <div className={`flex-1 min-h-0 divide-y divide-slate-200 ${detailsOpen ? 'overflow-y-auto clinical-scroll' : ''}`}>
           {filteredQueue.map((p) => {
-            const isSelected = p.id === patient.id;
+            const isExpanded = detailsOpen && p.id === patient.id;
             const isRecent = p.id === recentlyUpdatedId;
             const tMeta = getTierMeta(p.riskTier);
 
@@ -826,18 +1058,20 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
               <button
                 key={p.id}
                 type="button"
-                onClick={() => onSelectPatient(p.id)}
+                aria-expanded={isExpanded}
+                aria-controls="selected-patient-panel"
+                onClick={() => togglePatientDetails(p.id)}
                 className={`w-full text-left px-4 py-2.5 transition-colors cursor-pointer ${
                   isRecent
                     ? 'bg-sky-50'
-                    : isSelected
+                    : isExpanded
                       ? 'bg-sky-50/80 ring-1 ring-inset ring-sky-200'
                       : 'hover:bg-slate-50'
                 }`}
               >
                 <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-1.5">
+                  <div className={`min-w-0 ${detailsOpen ? '' : 'flex-1 sm:grid sm:grid-cols-[1fr_1.3fr_1.5fr] sm:items-center sm:gap-3'}`}>
+                    <div className="flex min-w-0 items-center gap-1.5">
                       <span className="text-xs font-semibold text-slate-900 truncate">
                         {p.name}
                       </span>
@@ -855,24 +1089,30 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
                     </div>
                   </div>
 
-                  <div className="text-right shrink-0">
-                    <div className="flex items-center justify-end gap-1 font-mono tabular-nums">
-                      <span className="text-sm font-bold text-slate-900">{p.riskScore}</span>
-                      {p.scoreDelta !== 0 && (
-                        <span
-                          className={`text-[11px] font-semibold ${
-                            p.scoreDelta > 0 ? 'text-red-600' : 'text-emerald-700'
-                          }`}
-                        >
-                          {p.scoreDelta > 0 ? `+${p.scoreDelta}` : p.scoreDelta}
-                        </span>
-                      )}
+                  <div className="flex shrink-0 items-center gap-2 text-right">
+                    <div>
+                      <div className="flex items-center justify-end gap-1 font-mono tabular-nums">
+                        <span className="text-sm font-bold text-slate-900">{p.riskScore}</span>
+                        {p.scoreDelta !== 0 && (
+                          <span
+                            className={`text-[11px] font-semibold ${
+                              p.scoreDelta > 0 ? 'text-red-600' : 'text-emerald-700'
+                            }`}
+                          >
+                            {p.scoreDelta > 0 ? `+${p.scoreDelta}` : p.scoreDelta}
+                          </span>
+                        )}
+                      </div>
+                      <span
+                        className={`inline-block mt-0.5 px-1.5 py-0.5 rounded border text-[10px] font-medium ${tMeta.badgeClasses}`}
+                      >
+                        {p.riskTier}
+                      </span>
                     </div>
-                    <span
-                      className={`inline-block mt-0.5 px-1.5 py-0.5 rounded border text-[10px] font-medium ${tMeta.badgeClasses}`}
-                    >
-                      {p.riskTier}
-                    </span>
+                    <ChevronDown
+                      aria-hidden="true"
+                      className={`h-4 w-4 text-slate-500 ${isExpanded ? 'rotate-180' : ''}`}
+                    />
                   </div>
                 </div>
 
@@ -881,6 +1121,8 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
                     className={
                       p.callStatus === 'Confirmed Attending'
                         ? 'text-emerald-700 font-semibold'
+                        : p.callStatus === 'Appointment Cancelled'
+                          ? 'text-red-700 font-semibold'
                         : p.callStatus === 'Follow-Up Required (Human Callback Queued)'
                           ? 'text-amber-700 font-semibold'
                           : p.callStatus === 'No Pick-Up'
@@ -891,11 +1133,6 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
                     {p.callStatus}
                     {p.verifiedBarrier ? ` · [${p.verifiedBarrier}]` : ''}
                   </span>
-                  {p.goal3AtRisk && (
-                    <span className="text-orange-700 font-mono tabular-nums font-semibold">
-                      Goal 3 Breach Risk
-                    </span>
-                  )}
                 </div>
               </button>
             );
@@ -904,7 +1141,13 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
       </section>
 
       {/* Right: Outbound AI Voice Console + Human-in-the-Loop Safeguards */}
-      <section className="bg-white border border-slate-200 rounded-lg flex flex-col overflow-hidden h-[700px] shadow-2xs">
+      <section
+        ref={detailsPanelRef}
+        id="selected-patient-panel"
+        aria-label="Selected patient details"
+        hidden={!detailsOpen}
+        className={`min-w-0 scroll-mt-4 bg-white border border-slate-200 rounded-lg flex-col overflow-y-auto clinical-scroll h-[700px] shadow-2xs ${detailsOpen ? 'flex' : 'hidden'}`}
+      >
         {/* Patient Clinical Header + Pathway Consequence */}
         <div className="px-4 py-3 border-b border-slate-200 bg-slate-50/70">
           <div className="flex items-start justify-between gap-3">
@@ -938,16 +1181,6 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
                 </span>
                 <span aria-hidden="true" className="text-slate-400">·</span>
                 <span className="text-slate-700">{patient.appointmentType}</span>
-                <span aria-hidden="true" className="text-slate-400">·</span>
-                <span
-                  className={`inline-flex items-center gap-1 font-mono tabular-nums text-[11px] font-semibold ${
-                    patient.goal3AtRisk ? 'text-orange-700' : 'text-emerald-700'
-                  }`}
-                >
-                  <Clock className="w-3 h-3" />
-                  {projectedDays}d / {patient.targetDaysTotal}d Goal 3 Target{' '}
-                  {patient.goal3AtRisk ? '(Delay Risk)' : '(Within Target)'}
-                </span>
               </div>
             </div>
 
@@ -975,43 +1208,44 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
             </div>
           </div>
 
-          {/* Score Breakdown Strip */}
-          <div className="mt-2 pt-2 border-t border-slate-200 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-500">
-            <span>
-              Pathway/Stage{' '}
-              <strong className="font-mono tabular-nums text-slate-800">
-                {patient.riskBreakdown.pathwayUrgencyPoints}
-              </strong>
-            </span>
-            <span>·</span>
-            <span>
-              Age/G8{' '}
-              <strong className="font-mono tabular-nums text-slate-800">
-                {patient.riskBreakdown.ageFrailtyPoints}
-              </strong>
-            </span>
-            <span>·</span>
-            <span>
-              Distance/Winter{' '}
-              <strong className="font-mono tabular-nums text-slate-800">
-                {patient.riskBreakdown.distanceWeatherPoints}
-              </strong>
-            </span>
-            <span>·</span>
-            <span>
-              Equity/Access{' '}
-              <strong className="font-mono tabular-nums text-slate-800">
-                {patient.riskBreakdown.equityLanguagePoints}
-              </strong>
-            </span>
-            <span>·</span>
-            <span>
-              History/Goal 3{' '}
-              <strong className="font-mono tabular-nums text-slate-800">
-                {patient.riskBreakdown.historyMissedPoints}
-              </strong>
-            </span>
+          <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-2 border-t border-slate-200 pt-3 text-base text-black" aria-label="Appointment timing">
+            {patient.callStatus === 'Appointment Cancelled' ? (
+              <span className="inline-flex items-center gap-2 font-semibold text-red-700">
+                <PhoneOff aria-hidden="true" className="h-4 w-4" /> Appointment cancelled
+              </span>
+            ) : (
+              <>
+                <span><strong>{patient.daysElapsed}</strong> days elapsed</span>
+                <span className="inline-flex items-center gap-2"><Clock aria-hidden="true" className="h-4 w-4" />
+                  {patient.daysUntilAppointment === 0 ? 'Appointment today' : patient.daysUntilAppointment > 0
+                    ? <><strong>{patient.daysUntilAppointment}</strong> days until appointment</>
+                    : <><strong>{Math.abs(patient.daysUntilAppointment)}</strong> days since appointment</>}
+                </span>
+              </>
+            )}
           </div>
+
+          <details className="mt-2 rounded-md border border-slate-200 bg-white text-xs text-slate-700">
+            <summary className="cursor-pointer px-2.5 py-1.5 font-semibold text-sky-800">
+              How the outreach score is calculated
+            </summary>
+            <div className="max-h-56 overflow-y-auto border-t border-slate-200 px-2.5 py-2">
+              <p>
+                The demo score ranks patients for coordinator follow-up. Baseline {patient.baselineScore}
+                {patient.scoreDelta === 0
+                  ? ' with no call outcome adjustment.'
+                  : ' ' + (patient.scoreDelta > 0 ? '+ ' : '− ') + Math.abs(patient.scoreDelta) + ' after the call outcome = ' + patient.riskScore + '/100.'}
+              </p>
+              <dl className="mt-2 space-y-2">
+                {riskFactors.map(([label, points, explanation]) => (
+                  <div key={label}>
+                    <dt className="font-semibold text-slate-900">{label} · {points} points</dt>
+                    <dd>{explanation}</dd>
+                  </div>
+                ))}
+              </dl>
+            </div>
+          </details>
         </div>
 
         {/* Call Controls & Waveform */}
@@ -1025,7 +1259,7 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-sky-700 hover:bg-sky-800 text-white font-semibold text-xs transition-colors cursor-pointer"
                 >
                   <Mic className="w-3.5 h-3.5" />
-                  Start Live Mic Call
+                  Try a microphone conversation
                 </button>
                 <button
                   type="button"
@@ -1033,7 +1267,7 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 font-medium text-xs transition-colors cursor-pointer"
                 >
                   <Phone className="w-3.5 h-3.5 text-sky-700" />
-                  Simulate Outbound Call
+                  Start a guided simulation
                 </button>
               </>
             ) : (
@@ -1043,13 +1277,14 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-red-600 hover:bg-red-700 text-white font-semibold text-xs transition-colors cursor-pointer"
               >
                 <PhoneOff className="w-3.5 h-3.5" />
-                End &amp; Finalize Call
+                End session and review outcome
               </button>
             )}
 
             <button
               type="button"
               onClick={() => onRequestHumanCoordinator(patient.id)}
+              disabled={patient.humanCoordinatorRequested}
               className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border text-xs font-medium transition-colors cursor-pointer ${
                 patient.humanCoordinatorRequested
                   ? 'bg-amber-50 border-amber-300 text-amber-900 font-semibold'
@@ -1058,15 +1293,15 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
             >
               <PhoneCall className="w-3.5 h-3.5 text-amber-600" />
               {patient.humanCoordinatorRequested
-                ? 'Human Care Coordinator Queued'
-                : 'Request Human Care Coordinator'}
+                ? 'Coordinator follow-up requested'
+                : 'Request coordinator follow-up'}
             </button>
 
             <div className="ml-auto flex items-center gap-1.5 text-[11px] font-mono text-slate-500">
               {micActive ? <Mic className="w-3.5 h-3.5 text-emerald-600" /> : <MicOff className="w-3.5 h-3.5" />}
               <span>
                 {voiceMode === 'gemini-live'
-                  ? 'gemini-3.8-live'
+                  ? 'Gemini Live'
                   : voiceMode === 'web-speech'
                     ? 'WebSpeech'
                     : voiceMode === 'guided'
@@ -1076,7 +1311,12 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
             </div>
           </div>
 
-          <div className="flex items-center gap-3 px-2.5 py-1.5 rounded bg-slate-50 border border-slate-200">
+          <p className="text-[11px] leading-relaxed text-slate-600">
+            Use your microphone to play the patient, or choose a sample reply in the guided simulation.
+            A follow-up request is recorded in this demo workspace for a human coordinator.
+          </p>
+
+          <div role="status" className="flex items-center gap-3 px-2.5 py-1.5 rounded bg-slate-50 border border-slate-200">
             <Volume2
               className={`w-4 h-4 shrink-0 ${
                 isAiSpeaking ? 'text-sky-700' : waveActive ? 'text-emerald-600' : 'text-slate-400'
@@ -1113,6 +1353,8 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
             <div className="flex items-center gap-2 text-xs">
               {patient.callStatus === 'Confirmed Attending' ? (
                 <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+              ) : patient.callStatus === 'Appointment Cancelled' ? (
+                <PhoneOff className="w-4 h-4 text-red-600 shrink-0" />
               ) : patient.callStatus === 'Follow-Up Required (Human Callback Queued)' ? (
                 <UserCheck className="w-4 h-4 text-amber-600 shrink-0" />
               ) : (
@@ -1164,7 +1406,8 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
               )}
               {patient.recommendedAction && (
                 <p className="text-sky-800">
-                  <strong>Safeguard Action:</strong> {patient.recommendedAction}
+                  <strong>{patient.callStatus === 'Appointment Cancelled' ? 'Next step:' : 'Safeguard Action:'}</strong>{' '}
+                  {patient.recommendedAction}
                 </p>
               )}
               {patient.deployedOperationAction && (
@@ -1177,7 +1420,7 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
         </div>
 
         {/* Live Transcript */}
-        <div className="flex-1 min-h-0 overflow-y-auto clinical-scroll px-4 py-2.5 space-y-2 bg-white">
+        <div className="flex-1 min-h-32 overflow-y-auto clinical-scroll px-4 py-2.5 space-y-2 bg-white">
           {patient.transcript.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center text-center px-4 py-4 border border-dashed border-slate-300 rounded-md bg-slate-50/50">
               <Sparkles className="w-5 h-5 text-sky-700 mb-1.5" />
@@ -1185,9 +1428,8 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
                 Ready for Lung Fast-Track Outreach: {patient.name}
               </p>
               <p className="text-[11px] text-slate-500 mt-1 max-w-md">
-                Start a Live Mic Call or click any "Simulate Patient Voice Reply" scenario below.
-                Declined appointments are never auto-cancelled—they route directly to human Care
-                Coordinator follow-up.
+                Try a microphone conversation or click a "Simulate Patient Voice Reply" scenario below.
+                An explicit cancellation request triggers one reason question before the demo appointment is cancelled.
               </p>
             </div>
           ) : (
