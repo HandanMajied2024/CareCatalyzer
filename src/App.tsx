@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from 'react';
+import { SimulationLab } from './components/SimulationLab';
 import {
   Activity,
   ArrowRight,
@@ -37,6 +38,7 @@ import { voiceAudio } from './utils/voiceAudio.ts';
 type ActiveTab = 'tab1' | 'tab2' | 'tab3';
 
 export function App() {
+  const [showLab, setShowLab] = useState(true);
   const [activeTab, setActiveTab] = useState<ActiveTab>('tab1');
   const [patients, setPatients] = useState<PatientRecord[]>(INITIAL_PATIENTS);
   const [selectedPatientId, setSelectedPatientId] = useState<string>(FEATURED_DEMO_PATIENT_ID);
@@ -307,10 +309,13 @@ export function App() {
     setRecentlyUpdatedId(null);
   };
 
+  if (showLab) return <SimulationLab onOpenWorkflow={() => setShowLab(false)} />;
+
   return (
     <div className="min-h-screen flex flex-col bg-slate-50 text-slate-900">
       {/* Persistent Top Multi-Tab Navigation Bar */}
       <header className="px-4 lg:px-6 py-3 border-b border-slate-200 bg-white flex flex-wrap items-center justify-between gap-4">
+        <button className="px-3 py-2 rounded-lg bg-emerald-700 text-white text-xs" onClick={() => setShowLab(true)}>← Simulation lab</button>
         {/* Brand */}
         <div className="flex items-center gap-2.5 shrink-0">
           <div className="w-9 h-9 rounded-lg bg-sky-700 flex items-center justify-center text-white shadow-xs">
