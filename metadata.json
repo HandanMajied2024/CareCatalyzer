@@ -1,0 +1,6 @@
+{
+  "name": "POLKU-3",
+  "description": "National cancer care pathway equity analyst and intervention simulator for Finland's National Cancer Strategy 2026–2035 (Goal 3).",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
