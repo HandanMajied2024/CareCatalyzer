@@ -1,5 +1,7 @@
 # CareCatalyzer
 
+> Part of [CareCatalyst](https://github.com/HandanMajied2024/CareCatalyst) (Junction 2026 · AstraZeneca Equal Care Across Finland). Concept A = today: the county Care Pathway Agent. Concept B (vision, personal health agent CarePulse): [youcefjerbi/mobile_app](https://github.com/youcefjerbi/mobile_app). Public mirror: https://github.com/HandanMajied2024/CareCatalyzer. All patients are synthetic. MIT licensed.
+
 **Equal cancer care across Finland.** Built at Junction 2026 for the AstraZeneca challenge "Equal Care Across Finland".
 
 Patients in Lapland can live hundreds of kilometres from the nearest cancer centre. When they miss or cancel an appointment, the reason (no bus, a snowstorm, a work shift, a letter they could not read) is rarely recorded, so the region cannot fix it. CareCatalyzer closes that gap: a Gemini-powered calling agent phones patients on the lung cancer fast-track pathway, asks why they cannot attend, classifies the barrier, and feeds it straight into a regional barrier map and an intervention simulator. Coordinators see *why* care is unequal, region by region, and can test which fix (transport, mobile units, extra capacity) helps the most patients for the budget. It supports Goal 3 of Finland's National Cancer Strategy 2026-2035.
@@ -7,7 +9,7 @@ Patients in Lapland can live hundreds of kilometres from the nearest cancer cent
 ## Features
 
 - **Calling agent.** Live voice call (Gemini Live) or text call with a synthetic patient. The agent confirms the appointment, asks for the cancellation reason exactly once, classifies the barrier (`Transport`, `Weather`, `Scheduling`, `Accessibility`, `Language`, `Other`) and raises a nurse alert for acute symptoms.
-- **Regional Barrier Map.** Verified barriers aggregated for three focus regions: Lapland / OYS North, North Savo / KYS East, Uusimaa / HUS South.
+- **Regional summary.** 664 synthetic patients across all 19 regions: map, cancellation reasons, barriers from calls and the Goal 3 indicator "Treatment started within target time".
 - **Intervention Simulator.** Compares regional support plans using the barriers captured by the calls, the selected region and severe-weather conditions.
 - **Simulation Lab.** Transparent policy model: budget, months, extra hospital slots, transport cars, mobile units and winter conditions translate into patients treated, access, travel distance and waiting time.
 - **Risk engine.** Each call outcome updates the patient's risk score and flags patients whose Goal 3 timeframe is at risk.
@@ -27,9 +29,23 @@ npm run dev              # http://localhost:3000
 | `GEMINI_API_KEY` | (required) | Google AI Studio key, used only on the server |
 | `GEMINI_CHAT_MODEL` | `gemini-3.8-flash` | Chat turns and classification |
 | `GEMINI_LIVE_MODEL` | `gemini-3.8-live` | Live voice calls |
+| `GEMINI_CHAT_FALLBACK_MODELS` | `gemini-3-flash-preview,gemini-3.5-flash` | Tried in order if the chat model is overloaded or slower than `GEMINI_TURN_TIMEOUT_MS` (10000) |
+| `GEMINI_LIVE_VOICE` | `Charon` | Male prebuilt voice for Live calls |
+| `ELEVENLABS_API_KEY` | (optional) | Server TTS for turn-based calls (`POST /api/tts`) |
+| `ELEVENLABS_VOICE_ID_MALE` / `_FEMALE` | Adam / Rachel | ElevenLabs voices (`voice: "male"` default, `"female"` for the personal agent) |
 | `PORT` | `3000` | Server port |
 
-Other scripts: `npm run lint` (type check), `npm run build` (production build), `npx tsx --test tests/` (unit tests). `GET /api/health` shows whether a key is configured. See [GEMINI_SETUP.md](GEMINI_SETUP.md) for details.
+Without an ElevenLabs key, `/api/tts` uses Gemini TTS (`gemini-2.5-flash-preview-tts`, voice Charon); if that fails the browser speaks with a male system voice.
+
+**Production / deploy (single Node process):** `npm ci && npm run build && NODE_ENV=production PORT=3000 node server.ts` (Node 22.18+ runs `server.ts` directly; on older Node use `npx tsx server.ts`). It serves `dist/`, the REST API and the `/api/live-call` WebSocket on one port.
+
+### Demo path
+
+Patients → filter **Lapland** + **Pending** → **Matti Heikkinen (Kemi, 115 km)** → **Call patient**. The patient says there is no bus from Kemi → the agent classifies **Transport**, holds the appointment and queues a follow-up → **Regional summary** jumps to Lapland, the Transport barrier counts +1 and "Treatment started within target time" moves up.
+
+**Plan B (still Gemini):** pick **Turn-based** next to the call button, or let it switch automatically when Gemini Live fails (connection error, mic blocked, or no agent audio within 6 s). The patient speaks (browser speech recognition), types, or taps a quick reply; each turn goes to `/api/call-turn` (Gemini Flash) and the reply is spoken via `/api/tts`. **End call** stops mic, audio and socket and classifies the transcript so far.
+
+Other scripts: `npm run lint` (type check), `npm run build` (production build), `npm test` (unit tests). `GET /api/health` shows whether a key is configured. See [GEMINI_SETUP.md](GEMINI_SETUP.md) for details.
 
 ## Built with Gemini
 
@@ -39,7 +55,7 @@ Other scripts: `npm run lint` (type check), `npm run build` (production build), 
 
 - **Gemini Live (`gemini-3.8-live`)** powers the voice call. The browser streams 16 kHz PCM microphone audio over a WebSocket (`/api/live-call`) to the server, which holds the Live session and streams back audio (prebuilt voice) plus input and output transcriptions. Automatic voice-activity detection with barge-in lets the patient interrupt the agent, and the patient's name, municipality and appointment type are passed as custom transcription vocabulary.
 - **Gemini Flash (`gemini-3.8-flash`) with structured output** handles each text turn (`/api/call-turn`) and the end-of-call classification (`/api/classify-call`). A JSON `responseSchema` forces every answer into `aiReply`, `outcome`, `needsProbe`, `barrierCategory`, `barrierSummary`, `recommendedAction` and `clinicalNurseAlert`, so a conversation becomes a typed record that updates the patient's risk score, the regional map and the simulator directly.
-- **Shared safeguards.** Both paths use the same coordinator system prompt: one question at a time, ask for the reason exactly once before cancelling, fixed barrier taxonomy, urgent nurse triage on acute symptoms. If Live is unavailable, browser speech recognition feeds the same Gemini Flash endpoint. If Gemini fails, the app shows an error instead of scripted answers.
+- **Shared safeguards.** Both paths use the same coordinator system prompt: one question at a time, ask for the reason exactly once before cancelling, fixed barrier taxonomy, urgent nurse triage on acute symptoms. If Live is unavailable or slow, a turn-based call (browser speech recognition, typed text or quick replies) feeds the same Gemini Flash endpoint and speaks the reply with a male TTS voice. If Gemini fails, the app shows an error instead of scripted answers.
 
 **What is novel.** The AI call is not a chatbot bolted onto a dashboard: every conversation produces structured equity data. One patient saying "the roads are closed by snow" moves a Lapland weather barrier on the map and changes which intervention the simulator recommends.
 
@@ -53,7 +69,7 @@ The team used OpenAI Codex as its coding agent during the hackathon to build and
 
 ## Data
 
-All patients, appointments and call transcripts are **synthetic**. The app contains no real patient data or personal information. Regional figures in the policy model are illustrative demo values, not official statistics. The reference documents in `public/assets/aistudio/` are the public Finnish National Cancer Strategy 2026-2035 and its implementation roadmap.
+All patients, appointments and call transcripts are **synthetic**. The app contains no real patient data or personal information. Regional figures in the policy model are illustrative demo values, not official statistics. The synthetic barrier mix is deliberately shaped like the pitch story: sparse northern and eastern regions (e.g. Lapland, Kainuu, North Karelia) have transport/distance as the top barrier (~45 %), metro regions (Uusimaa, Pirkanmaa, Southwest Finland) show more scheduling, fear and language barriers. Distances are approximate road kilometres to the regional care team. The Goal 3 tile ("Treatment started within target time") is computed from these synthetic pathway events; Finland publishes no regional figure for it yet. The reference documents in `public/assets/aistudio/` are the public Finnish National Cancer Strategy 2026-2035 and its implementation roadmap.
 
 <!-- TODO: add demo video / live demo link -->
 

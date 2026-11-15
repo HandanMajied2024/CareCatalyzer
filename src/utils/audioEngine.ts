@@ -26,7 +26,7 @@ class MissionAudioEngine {
   }
 
   /**
-   * Subtle sonar ping when clicking a FICAN region or Patient Persona in 3D space.
+   * Subtle sonar ping when clicking a region or Patient Persona in 3D space.
    */
   public playSonarPing(): void {
     const ctx = this.ensureContext();
