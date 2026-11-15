@@ -45,8 +45,9 @@ import {
   type LucideIcon,
   AudioLines,
   MessagesSquare,
+  Pin,
 } from 'lucide-react';
-import { FOCUS_REGIONS, FOCUS_REGION_ORDER } from '../data/patients.ts';
+import { FEATURED_DEMO_PATIENT_ID, FOCUS_REGIONS, FOCUS_REGION_ORDER } from '../data/patients.ts';
 import type {
   BarrierCategory,
   CallStatus,
@@ -344,6 +345,7 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
   const micSendEnabledRef = useRef(false);
   const speechRecRef = useRef<SpeechRecognitionInstance | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
+  const transcriptBoxRef = useRef<HTMLDivElement | null>(null);
 
   const patient = useMemo(
     () => patients.find((p) => p.id === selectedPatientId) ?? patients[0],
@@ -379,17 +381,25 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
             p.appointmentType.toLowerCase().includes(q)
           : true
       )
-      .sort((a, b) => b.riskScore - a.riskScore);
+      // Demo patient (Matti) is pinned on top so the preselected card matches the list.
+      .sort((a, b) =>
+        Number(b.id === FEATURED_DEMO_PATIENT_ID) - Number(a.id === FEATURED_DEMO_PATIENT_ID) ||
+        b.riskScore - a.riskScore
+      );
   }, [patients, regionFilter, stageFilter, tierFilter, statusFilter, searchQuery]);
   const page = paginatePatients(filteredQueue, queuePage);
   useEffect(() => { if (queueListRef.current) queueListRef.current.scrollTop = 0; },
     [page.page, regionFilter, stageFilter, tierFilter, statusFilter, searchQuery]);
 
+  // Scroll only the transcript box itself; never the window or the details card.
   useEffect(() => {
-    if (detailsOpen) {
-      transcriptEndRef.current?.scrollIntoView({ block: 'nearest' });
-    }
+    const box = transcriptBoxRef.current;
+    if (detailsOpen && box && patient.transcript.length > 0) box.scrollTop = box.scrollHeight;
   }, [detailsOpen, patient.transcript.length]);
+  // Details card always starts at the top (patient name + score ring visible).
+  useEffect(() => {
+    if (detailsPanelRef.current) detailsPanelRef.current.scrollTop = 0;
+  }, [patient.id, detailsOpen]);
 
   const cleanupMediaAndSockets = () => {
     micSendEnabledRef.current = false;
@@ -1299,6 +1309,12 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
                   </div>
                   <div className="mt-2 flex flex-wrap items-center gap-2">
                     <StatusChip status={p.callStatus} />
+                    {p.id === FEATURED_DEMO_PATIENT_ID && (
+                      <span className="inline-flex items-center gap-1.5 rounded-full bg-cc-blue-soft px-3 py-1 text-sm font-medium text-cc-blue">
+                        <Pin aria-hidden="true" className="h-3.5 w-3.5" />
+                        Demo
+                      </span>
+                    )}
                     {p.verifiedBarrier && (
                       <span className="inline-flex items-center gap-1.5 rounded-full bg-cc-surface px-3 py-1 text-sm font-medium">
                         <Tag aria-hidden="true" className="h-3.5 w-3.5" />
@@ -1662,7 +1678,7 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
         </div>
 
         {/* Transcript */}
-        <div className="clinical-scroll max-h-[480px] min-h-40 flex-1 space-y-3 overflow-y-auto px-5 py-5 sm:px-6 lg:max-h-none lg:px-8">
+        <div ref={transcriptBoxRef} className="clinical-scroll max-h-[480px] min-h-40 flex-1 space-y-3 overflow-y-auto px-5 py-5 sm:px-6 lg:max-h-none lg:px-8">
           {patient.transcript.length === 0 ? (
             <div className="flex h-full min-h-32 flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-cc-line p-6 text-center">
               <Sparkles aria-hidden="true" className="h-7 w-7 text-cc-blue" />
