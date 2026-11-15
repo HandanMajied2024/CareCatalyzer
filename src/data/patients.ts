@@ -108,7 +108,7 @@ export const INITIAL_PATIENTS: PatientRecord[] = FOCUS_REGION_ORDER.flatMap((reg
     }
     // Seed genuine cancellation states in each region without changing its intended colour.
     // Low profiles become Medium; Urgent and Very High profiles remain in their existing tiers.
-    if (tier === 'Low' || ((tier === 'Urgent' || tier === 'Very High Risk') && index % 5 === 0)) {
+    if ((tier === 'Low' && index % 3 !== 0) || ((tier === 'Urgent' || tier === 'Very High Risk') && index % 5 === 0)) {
       const exampleIndex = index % 3 === 0 ? (regionIndex + index) % cancellationExamples.length : regionIndex % cancellationExamples.length;
       const example = cancellationExamples[exampleIndex];
       patient = applyCallOutcomeToPatient(patient, {
