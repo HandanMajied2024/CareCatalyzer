@@ -29,6 +29,7 @@ import type {
 } from '../types/careconnect.ts';
 import { BARRIER_CATEGORIES, getTierMeta, RISK_TIERS } from '../utils/riskEngine.ts';
 import { float32ToPcm16Base64, voiceAudio } from '../utils/voiceAudio.ts';
+import { paginatePatients } from '../utils/pagination.ts';
 
 interface Tab1CallingAgentProps {
   patients: PatientRecord[];
@@ -52,7 +53,6 @@ interface Tab1CallingAgentProps {
     }
   ) => void;
   onOverrideBarrier: (patientId: string, newBarrier: BarrierCategory) => void;
-  onRequestHumanCoordinator: (patientId: string) => void;
 }
 
 interface SpeechRecognitionAlternativeLike {
@@ -189,22 +189,21 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
   onAppendTranscript,
   onApplyOutcome,
   onOverrideBarrier,
-  onRequestHumanCoordinator,
 }) => {
   const [regionFilter, setRegionFilter] = useState<FocusRegionId | 'ALL'>('ALL');
   const [stageFilter, setStageFilter] = useState<PathwayStage | 'ALL'>('ALL');
   const [tierFilter, setTierFilter] = useState<RiskTier | 'ALL'>('ALL');
   const [statusFilter, setStatusFilter] = useState<CallStatus | 'ALL'>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
+  const [queuePage, setQueuePage] = useState(1);
+  const queueListRef = useRef<HTMLDivElement>(null);
   const [detailsOpen, setDetailsOpen] = useState(true);
   const detailsPanelRef = useRef<HTMLElement | null>(null);
 
   const [voiceMode, setVoiceMode] = useState<'idle' | 'gemini-live' | 'web-speech' | 'guided'>(
     'idle'
   );
-  const [statusNote, setStatusNote] = useState<string>(
-    'Select a Lung Cancer Fast-Track patient and initiate AI outreach.'
-  );
+  const [statusNote, setStatusNote] = useState('');
   const [isAiSpeaking, setIsAiSpeaking] = useState(false);
   const [isProcessingTurn, setIsProcessingTurn] = useState(false);
   const [micActive, setMicActive] = useState(false);
@@ -225,7 +224,11 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
 
   const isLiveCalling = activeCallPatientId === patient.id;
   const activePatientRef = useRef(patient);
-  activePatientRef.current = patient;
+  activePatientRef.current = patients.find((p) => p.id === activeCallPatientId) ?? patient;
+  const liveTranscriptRef = useRef<TranscriptLine[]>([]);
+  const endingCallRef = useRef(false);
+  const classificationVersionRef = useRef(0);
+  const [isConnecting, setIsConnecting] = useState(false);
   const isLiveRef = useRef(isLiveCalling);
   isLiveRef.current = isLiveCalling;
 
@@ -250,6 +253,9 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
       )
       .sort((a, b) => b.riskScore - a.riskScore);
   }, [patients, regionFilter, stageFilter, tierFilter, statusFilter, searchQuery]);
+  const page = paginatePatients(filteredQueue, queuePage);
+  useEffect(() => { if (queueListRef.current) queueListRef.current.scrollTop = 0; },
+    [page.page, regionFilter, stageFilter, tierFilter, statusFilter, searchQuery]);
 
   useEffect(() => {
     if (detailsOpen) {
@@ -312,11 +318,11 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
   }, []);
 
   useEffect(() => {
-    if (!isLiveCalling && voiceMode !== 'idle') {
+    if (!activeCallPatientId && voiceMode !== 'idle') {
       cleanupMediaAndSockets();
       setVoiceMode('idle');
     }
-  }, [isLiveCalling, voiceMode]);
+  }, [activeCallPatientId, voiceMode]);
 
   const speakGreeting = (target: PatientRecord) => {
     const region = FOCUS_REGIONS[target.regionId];
@@ -341,11 +347,14 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
     transcript: TranscriptLine[],
     latestPatientText: string
   ) => {
+    if (endingCallRef.current) return;
+    const version = ++classificationVersionRef.current;
     setIsProcessingTurn(true);
     try {
       const region = FOCUS_REGIONS[target.regionId];
       const response = await fetch('/api/classify-call', {
         method: 'POST',
+        signal: AbortSignal.timeout(20000),
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           patient: {
@@ -372,28 +381,55 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
         throw new Error(failure.error || 'Gemini could not classify the completed turn.');
       }
       const data = (await response.json()) as CallTurnApiResponse;
-      if (data.outcome === 'cancellation_reason_requested') {
+      if (endingCallRef.current || version !== classificationVersionRef.current) return;
+      if (['call_ended', 'no_answer', 'cancelled', 'confirmed', 'declined_classified'].includes(data.outcome)) {
+        await voiceAudio.waitForLivePlayback();
+        if (endingCallRef.current || version !== classificationVersionRef.current) return;
+      }
+      if (data.outcome === 'call_ended' || data.outcome === 'no_answer') {
+        endingCallRef.current = true;
+        cleanupMediaAndSockets();
+        setVoiceMode('idle');
+        onEndCall();
+        setStatusNote('Call ended · appointment unchanged.');
+      } else if (data.outcome === 'cancellation_reason_requested') {
         setStatusNote('Cancellation requested — waiting for the patient’s reason.');
       } else if (data.outcome === 'cancelled') {
+        endingCallRef.current = true;
         onApplyOutcome(target.id, {
           callStatus: 'Appointment Cancelled',
           barrierCategory: data.barrierCategory ?? 'Other',
           barrierSummary: data.barrierSummary ?? latestPatientText,
           recommendedAction: data.recommendedAction,
           clinicalNurseAlert: data.clinicalNurseAlert,
-          humanCoordinatorRequested: true,
+          humanCoordinatorRequested: false,
         });
         setStatusNote('Appointment cancelled after the reason was requested.');
         cleanupMediaAndSockets();
         setVoiceMode('idle');
         onEndCall();
+      } else if (data.outcome === 'confirmed' || data.outcome === 'declined_classified') {
+        onApplyOutcome(target.id, {
+          callStatus: data.outcome === 'confirmed' ? 'Confirmed Attending' : 'Follow-Up Required (Human Callback Queued)',
+          barrierCategory: data.barrierCategory,
+          barrierSummary: data.barrierSummary,
+          recommendedAction: data.recommendedAction,
+          clinicalNurseAlert: data.clinicalNurseAlert,
+          humanCoordinatorRequested: data.outcome === 'declined_classified',
+        });
+        endingCallRef.current = true;
+        cleanupMediaAndSockets();
+        setVoiceMode('idle');
+        onEndCall();
+        setStatusNote(data.outcome === 'confirmed' ? 'Call ended · attendance confirmed.' : 'Call ended · coordinator follow-up recorded.');
       }
     } catch (error) {
+      if (version !== classificationVersionRef.current) return;
       setStatusNote(
         error instanceof Error ? error.message : 'Gemini could not classify the completed turn.'
       );
     } finally {
-      setIsProcessingTurn(false);
+      if (version === classificationVersionRef.current) setIsProcessingTurn(false);
     }
   };
 
@@ -548,7 +584,7 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
         .webkitSpeechRecognition;
 
     if (!SpeechRecCtor) {
-      setStatusNote('Guided mode active — use Simulated Voice Replies or text box below.');
+      setStatusNote('Microphone unavailable. Check browser microphone permissions and try again.');
       setVoiceMode('guided');
       return;
     }
@@ -578,16 +614,24 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
       rec.start();
       speechRecRef.current = rec;
       setMicActive(true);
-      setStatusNote('Web Speech Recognition listening — speak naturally or simulate reply.');
+      setStatusNote('Listening — speak naturally.');
     } catch {
       setVoiceMode('guided');
-      setStatusNote('Guided mode active — use Simulated Patient Voice Replies below.');
+      setStatusNote('Microphone unavailable. Check browser microphone permissions and try again.');
     }
   };
 
   const handleStartLiveMicCall = async () => {
+    if (activeCallPatientId || isConnecting || isProcessingTurn) return;
+    setIsConnecting(true);
+    try {
     cleanupMediaAndSockets();
     const target = activePatientRef.current;
+    endingCallRef.current = false;
+    classificationVersionRef.current += 1;
+    liveTranscriptRef.current = [];
+    liveAiBufferRef.current = '';
+    liveUserBufferRef.current = '';
     setStatusNote('Checking Gemini connection…');
     try {
       const response = await fetch('/api/health');
@@ -660,6 +704,7 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
     };
 
     ws.onmessage = (evt) => {
+      if (wsRef.current !== ws) return;
       try {
         const msg = JSON.parse(String(evt.data)) as {
           type?: string;
@@ -711,6 +756,8 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
             setMicActive(true);
           } else {
             cleanupMediaAndSockets();
+            setVoiceMode('idle');
+            onEndCall();
             setStatusNote('This browser does not support live microphone audio.');
           }
           return;
@@ -735,7 +782,7 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
 
         if (msg.type === 'turn_complete') {
           setIsAiSpeaking(false);
-          const completedTranscript = [...activePatientRef.current.transcript];
+          const completedTranscript = [...liveTranscriptRef.current];
           const pendingTypedLine = pendingTypedLiveLineRef.current;
           const liveUserText =
             liveUserBufferRef.current.trim() || pendingTypedLine?.text.trim() || '';
@@ -768,6 +815,7 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
             onAppendTranscript(activePatientRef.current.id, aiLine);
             liveAiBufferRef.current = '';
           }
+          liveTranscriptRef.current = completedTranscript;
           micSendEnabledRef.current = true;
           setStatusNote('Listening — speak now or interrupt the next response.');
           if (liveUserText) {
@@ -790,8 +838,11 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
 
         if (msg.type === 'fallback') {
           switchedToFallback = true;
-          cleanupMediaAndSockets();
-          startWebSpeechFallback(activePatientRef.current);
+          void handleHangUpAndClassify();
+          return;
+        }
+        if (msg.type === 'live_closed') {
+          void handleHangUpAndClassify();
         }
       } catch {
         // noop
@@ -801,16 +852,18 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
     ws.onerror = () => {
       if (!switchedToFallback) {
         switchedToFallback = true;
-        cleanupMediaAndSockets();
-        startWebSpeechFallback(activePatientRef.current);
+        void handleHangUpAndClassify();
       }
     };
 
     ws.onclose = () => {
-      if (!switchedToFallback && isLiveRef.current && voiceMode === 'gemini-live') {
-        setMicActive(false);
+      if (!switchedToFallback && wsRef.current === ws) {
+        void handleHangUpAndClassify();
       }
     };
+    } finally {
+      setIsConnecting(false);
+    }
   };
 
   const handleStartGuidedCall = () => {
@@ -819,21 +872,40 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
     onStartCall(target.id);
     setVoiceMode('guided');
     voiceAudio.playDialTone();
-    setStatusNote('AI Outreach Call live — click a Simulated Patient Reply or type response.');
+    setStatusNote('Call connected.');
     speakGreeting(target);
   };
 
   const handleHangUpAndClassify = async () => {
-    const target = activePatientRef.current;
+    if (endingCallRef.current) return;
+    endingCallRef.current = true;
+    classificationVersionRef.current += 1;
+    const transcript = [...liveTranscriptRef.current];
+    for (const [speaker, text] of [
+      ['Patient', liveUserBufferRef.current.trim()],
+      ['AI Coordinator', liveAiBufferRef.current.trim()],
+    ] as const) {
+      if (!text) continue;
+      const line: TranscriptLine = { id: `end-${speaker}-${Date.now()}`, speaker, text, timestamp: nowTime() };
+      transcript.push(line);
+      onAppendTranscript(activePatientRef.current.id, line);
+    }
+    liveUserBufferRef.current = '';
+    liveAiBufferRef.current = '';
+    const target = { ...activePatientRef.current, transcript };
+    cleanupMediaAndSockets();
+    setVoiceMode('idle');
+    onEndCall();
     const hadPatientLines = target.transcript.some((t) => t.speaker === 'Patient');
     let completionNote = 'Call finished.';
 
-    if (voiceMode === 'gemini-live' && hadPatientLines) {
+    if (hadPatientLines) {
       setIsProcessingTurn(true);
       try {
         const region = FOCUS_REGIONS[target.regionId];
         const resp = await fetch('/api/classify-call', {
           method: 'POST',
+          signal: AbortSignal.timeout(20000),
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             patient: {
@@ -867,7 +939,7 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
               barrierSummary: data.barrierSummary,
               recommendedAction: data.recommendedAction,
               clinicalNurseAlert: data.clinicalNurseAlert,
-              humanCoordinatorRequested: true,
+              humanCoordinatorRequested: false,
             });
             completionNote = 'Appointment cancelled after the reason was requested.';
           } else if (data.outcome === 'confirmed') {
@@ -894,9 +966,6 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
       }
     }
 
-    cleanupMediaAndSockets();
-    setVoiceMode('idle');
-    onEndCall();
     setStatusNote(completionNote);
   };
 
@@ -947,9 +1016,10 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
   const riskFactors = [
     ['Care step and cancer stage', riskBreakdown.pathwayUrgencyPoints, patient.pathwayStage + ' and recorded cancer stage (' + patient.cancerStage + ').'],
     ['Age and G8 screening', riskBreakdown.ageFrailtyPoints, 'Age ' + patient.age + ' and G8 score ' + patient.g8FrailtyScore + '/17. The model gives more points for older age bands and lower G8 scores.'],
-    ['Travel distance', riskBreakdown.distanceWeatherPoints, patient.distanceKm + ' km to the assigned care hub in this scenario. Points use distance bands.'],
+    ['Travel distance', riskBreakdown.distanceWeatherPoints, patient.distanceKm + ' km to the assigned care hub. Points use distance bands.'],
     ['Access support', riskBreakdown.equityLanguagePoints, 'Recorded language barrier, financial vulnerability, or accessibility need.'],
-    ['Missed calls and time remaining', riskBreakdown.historyMissedPoints, patient.priorMissedCalls + ' prior missed calls recorded. Points also increase when the booking is close to or past the target.'],
+    ['Previous missed contacts', riskBreakdown.historyMissedPoints, patient.priorMissedCalls + ' prior missed calls recorded. This is coordination history, not clinical cancer risk.'],
+    ['Appointment coordination urgency', riskBreakdown.appointmentTimingPoints, patient.daysUntilAppointment < 0 ? 'The appointment date has passed.' : patient.daysUntilAppointment === 0 ? 'The appointment is today.' : patient.daysUntilAppointment + ' days remain. Timing adds priority only when an access risk is recorded.'],
   ] as const;
 
   function togglePatientDetails(patientId: string) {
@@ -975,7 +1045,7 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
                 Lung Cancer Fast-Track Queue
               </h2>
               <p className="text-[11px] text-slate-500">
-                Showing {filteredQueue.length} of {patients.length} patients across 3 focus regions
+                Showing {page.from}–{page.to} of {filteredQueue.length} matching patients
               </p>
             </div>
           </div>
@@ -986,7 +1056,7 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
               <input
                 type="text"
                 value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
+                onChange={(e) => { setSearchQuery(e.target.value); setQueuePage(1); }}
                 placeholder="Search patient, municipality, or ID..."
                 className="w-full bg-white border border-slate-300 rounded pl-8 pr-2.5 py-1.5 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-sky-600"
               />
@@ -994,11 +1064,11 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
 
             <select
               value={regionFilter}
-              onChange={(e) => setRegionFilter(e.target.value as FocusRegionId | 'ALL')}
+              onChange={(e) => { setRegionFilter(e.target.value as FocusRegionId | 'ALL'); setQueuePage(1); }}
               aria-label="Filter queue by region"
               className="bg-white border border-slate-300 rounded px-2 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-sky-600"
             >
-              <option value="ALL">All 3 Focus Regions</option>
+              <option value="ALL">All regions</option>
               {FOCUS_REGION_ORDER.map((id) => (
                 <option key={id} value={id}>
                   {FOCUS_REGIONS[id].shortLabel}
@@ -1008,7 +1078,7 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
 
             <select
               value={stageFilter}
-              onChange={(e) => setStageFilter(e.target.value as PathwayStage | 'ALL')}
+              onChange={(e) => { setStageFilter(e.target.value as PathwayStage | 'ALL'); setQueuePage(1); }}
               aria-label="Filter queue by pathway stage"
               className="bg-white border border-slate-300 rounded px-2 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-sky-600"
             >
@@ -1020,7 +1090,7 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
 
             <select
               value={tierFilter}
-              onChange={(e) => setTierFilter(e.target.value as RiskTier | 'ALL')}
+              onChange={(e) => { setTierFilter(e.target.value as RiskTier | 'ALL'); setQueuePage(1); }}
               aria-label="Filter queue by risk tier"
               className="bg-white border border-slate-300 rounded px-2 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-sky-600"
             >
@@ -1034,7 +1104,7 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
 
             <select
               value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value as CallStatus | 'ALL')}
+              onChange={(e) => { setStatusFilter(e.target.value as CallStatus | 'ALL'); setQueuePage(1); }}
               aria-label="Filter queue by call status"
               className="bg-white border border-slate-300 rounded px-2 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-sky-600"
             >
@@ -1048,8 +1118,9 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
           </div>
         </div>
 
-        <div className={`flex-1 min-h-0 divide-y divide-slate-200 ${detailsOpen ? 'overflow-y-auto clinical-scroll' : ''}`}>
-          {filteredQueue.map((p) => {
+        <div ref={queueListRef} className={`flex-1 min-h-0 divide-y divide-slate-200 ${detailsOpen ? 'overflow-y-auto clinical-scroll' : ''}`}>
+          {page.items.length === 0 && <p className="p-4 text-sm">No patients match these filters.</p>}
+          {page.items.map((p) => {
             const isExpanded = detailsOpen && p.id === patient.id;
             const isRecent = p.id === recentlyUpdatedId;
             const tMeta = getTierMeta(p.riskTier);
@@ -1087,21 +1158,16 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
                     <div className="text-[11px] text-slate-700 truncate mt-0.5">
                       {p.pathwayStage} · {p.appointmentType}
                     </div>
+                    <div className="mt-1 flex items-center gap-1.5 text-xs text-slate-700">
+                      <Phone aria-hidden="true" className="h-3.5 w-3.5" />
+                      <span aria-label="Phone number">{p.phoneNumber}</span>
+                    </div>
                   </div>
 
                   <div className="flex shrink-0 items-center gap-2 text-right">
                     <div>
                       <div className="flex items-center justify-end gap-1 font-mono tabular-nums">
                         <span className="text-sm font-bold text-slate-900">{p.riskScore}</span>
-                        {p.scoreDelta !== 0 && (
-                          <span
-                            className={`text-[11px] font-semibold ${
-                              p.scoreDelta > 0 ? 'text-red-600' : 'text-emerald-700'
-                            }`}
-                          >
-                            {p.scoreDelta > 0 ? `+${p.scoreDelta}` : p.scoreDelta}
-                          </span>
-                        )}
                       </div>
                       <span
                         className={`inline-block mt-0.5 px-1.5 py-0.5 rounded border text-[10px] font-medium ${tMeta.badgeClasses}`}
@@ -1138,6 +1204,11 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
             );
           })}
         </div>
+        <nav className="patient-pagination" aria-label="Patient pages">
+          <button type="button" disabled={page.page === 1} onClick={() => setQueuePage(page.page - 1)}>Previous</button>
+          <span role="status">Page {page.page} of {page.pageCount}</span>
+          <button type="button" disabled={page.page === page.pageCount} onClick={() => setQueuePage(page.page + 1)}>Next</button>
+        </nav>
       </section>
 
       {/* Right: Outbound AI Voice Console + Human-in-the-Loop Safeguards */}
@@ -1175,6 +1246,9 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
                 {patient.primaryLanguage}
               </p>
 
+              <p className="mt-1 flex items-center gap-1.5 text-sm text-slate-700">
+                <Phone aria-hidden="true" className="h-4 w-4" /> {patient.phoneNumber}
+              </p>
               <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
                 <span className="text-slate-900 font-medium">
                   Stage: {patient.pathwayStage}
@@ -1190,15 +1264,6 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
                   {patient.riskScore}
                 </span>
                 <span className="text-xs font-mono text-slate-400">/100</span>
-                {patient.scoreDelta !== 0 && (
-                  <span
-                    className={`text-xs font-mono tabular-nums font-semibold ${
-                      patient.scoreDelta > 0 ? 'text-red-600' : 'text-emerald-700'
-                    }`}
-                  >
-                    {patient.scoreDelta > 0 ? `+${patient.scoreDelta}` : patient.scoreDelta}
-                  </span>
-                )}
               </div>
               <span
                 className={`inline-block mt-0.5 px-2 py-0.5 rounded border text-[11px] font-medium ${tierMeta.badgeClasses}`}
@@ -1231,7 +1296,7 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
             </summary>
             <div className="max-h-56 overflow-y-auto border-t border-slate-200 px-2.5 py-2">
               <p>
-                The demo score ranks patients for coordinator follow-up. Baseline {patient.baselineScore}
+                The outreach score ranks patients for coordinator follow-up. Baseline {patient.baselineScore}
                 {patient.scoreDelta === 0
                   ? ' with no call outcome adjustment.'
                   : ' ' + (patient.scoreDelta > 0 ? '+ ' : '− ') + Math.abs(patient.scoreDelta) + ' after the call outcome = ' + patient.riskScore + '/100.'}
@@ -1248,103 +1313,42 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
           </details>
         </div>
 
-        {/* Call Controls & Waveform */}
+        {/* Real outbound phone call */}
         <div className="px-4 py-2.5 border-b border-slate-200 bg-white space-y-2">
-          <div className="flex flex-wrap items-center gap-2">
-            {!isLiveCalling ? (
-              <>
-                <button
-                  type="button"
-                  onClick={handleStartLiveMicCall}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-sky-700 hover:bg-sky-800 text-white font-semibold text-xs transition-colors cursor-pointer"
-                >
-                  <Mic className="w-3.5 h-3.5" />
-                  Try a microphone conversation
-                </button>
-                <button
-                  type="button"
-                  onClick={handleStartGuidedCall}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 font-medium text-xs transition-colors cursor-pointer"
-                >
-                  <Phone className="w-3.5 h-3.5 text-sky-700" />
-                  Start a guided simulation
-                </button>
-              </>
-            ) : (
-              <button
-                type="button"
-                onClick={handleHangUpAndClassify}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-red-600 hover:bg-red-700 text-white font-semibold text-xs transition-colors cursor-pointer"
-              >
-                <PhoneOff className="w-3.5 h-3.5" />
-                End session and review outcome
-              </button>
-            )}
-
+          <div className="flex flex-wrap items-end gap-2">
+            <label className="min-w-56 flex-1 text-xs font-medium text-slate-800">
+              Phone number
+              <input
+                type="tel"
+                value={patient.phoneNumber}
+                readOnly
+                className="mt-1 w-full rounded-md border border-slate-300 bg-slate-50 px-3 py-2 text-base text-black"
+              />
+            </label>
             <button
               type="button"
-              onClick={() => onRequestHumanCoordinator(patient.id)}
-              disabled={patient.humanCoordinatorRequested}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border text-xs font-medium transition-colors cursor-pointer ${
-                patient.humanCoordinatorRequested
-                  ? 'bg-amber-50 border-amber-300 text-amber-900 font-semibold'
-                  : 'bg-white hover:bg-slate-50 border-slate-300 text-slate-700'
-              }`}
+              onClick={() => void handleStartLiveMicCall()}
+              disabled={Boolean(activeCallPatientId) || isConnecting || isProcessingTurn}
+              className="inline-flex min-h-11 items-center gap-2 rounded-md bg-sky-700 px-4 py-2 text-base font-semibold text-white hover:bg-sky-800 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              <PhoneCall className="w-3.5 h-3.5 text-amber-600" />
-              {patient.humanCoordinatorRequested
-                ? 'Coordinator follow-up requested'
-                : 'Request coordinator follow-up'}
+              <Phone aria-hidden="true" className="h-5 w-5" />
+              {isConnecting ? 'Connecting…' : activeCallPatientId ? 'Call in progress' : 'Call patient'}
             </button>
-
-            <div className="ml-auto flex items-center gap-1.5 text-[11px] font-mono text-slate-500">
-              {micActive ? <Mic className="w-3.5 h-3.5 text-emerald-600" /> : <MicOff className="w-3.5 h-3.5" />}
-              <span>
-                {voiceMode === 'gemini-live'
-                  ? 'Gemini Live'
-                  : voiceMode === 'web-speech'
-                    ? 'WebSpeech'
-                    : voiceMode === 'guided'
-                      ? 'Guided AI'
-                      : 'Standby'}
+            {patient.humanCoordinatorRequested && (
+              <span className="inline-flex min-h-11 items-center gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-950">
+                <PhoneCall aria-hidden="true" className="h-4 w-4" />
+                Coordinator follow-up promised
               </span>
-            </div>
+            )}
           </div>
-
-          <p className="text-[11px] leading-relaxed text-slate-600">
-            Use your microphone to play the patient, or choose a sample reply in the guided simulation.
-            A follow-up request is recorded in this demo workspace for a human coordinator.
-          </p>
-
-          <div role="status" className="flex items-center gap-3 px-2.5 py-1.5 rounded bg-slate-50 border border-slate-200">
-            <Volume2
-              className={`w-4 h-4 shrink-0 ${
-                isAiSpeaking ? 'text-sky-700' : waveActive ? 'text-emerald-600' : 'text-slate-400'
-              }`}
-            />
-            <div className="flex items-end gap-0.5 h-4 shrink-0" aria-hidden="true">
-              {[0.4, 0.85, 0.55, 1, 0.65, 0.9, 0.45, 0.75, 0.5, 0.85].map((h, i) => (
-                <span
-                  key={i}
-                  className={`w-1 rounded-xs transition-all duration-200 ${
-                    isAiSpeaking
-                      ? 'bg-sky-600'
-                      : waveActive
-                        ? 'bg-emerald-600'
-                        : 'bg-slate-300'
-                  }`}
-                  style={{
-                    height: waveActive
-                      ? `${Math.round((isAiSpeaking ? h : h * 0.65) * 16)}px`
-                      : '3px',
-                  }}
-                />
-              ))}
+          {(isProcessingTurn || statusNote) && (
+            <div role="status" className="flex items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+              <PhoneCall aria-hidden="true" className="h-4 w-4 shrink-0 text-sky-700" />
+              <p className="text-sm text-slate-800">
+                {isProcessingTurn ? 'Updating call outcome…' : statusNote}
+              </p>
             </div>
-            <p className="text-xs text-slate-700 truncate">
-              {isProcessingTurn ? 'Evaluating spoken justification & pathway risk...' : statusNote}
-            </p>
-          </div>
+          )}
         </div>
 
         {/* Human-in-the-Loop Safeguard & Barrier Verification Panel */}
@@ -1412,7 +1416,7 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
               )}
               {patient.deployedOperationAction && (
                 <p className="text-emerald-800 font-medium">
-                  <strong>Deployed Simulator Action:</strong> {patient.deployedOperationAction}
+                  <strong>Support plan:</strong> {patient.deployedOperationAction}
                 </p>
               )}
             </div>
@@ -1425,11 +1429,10 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
             <div className="h-full flex flex-col items-center justify-center text-center px-4 py-4 border border-dashed border-slate-300 rounded-md bg-slate-50/50">
               <Sparkles className="w-5 h-5 text-sky-700 mb-1.5" />
               <p className="text-xs font-medium text-slate-800">
-                Ready for Lung Fast-Track Outreach: {patient.name}
+                Call history
               </p>
               <p className="text-[11px] text-slate-500 mt-1 max-w-md">
-                Try a microphone conversation or click a "Simulate Patient Voice Reply" scenario below.
-                An explicit cancellation request triggers one reason question before the demo appointment is cancelled.
+                Conversation notes and appointment updates will appear here after a call.
               </p>
             </div>
           ) : (
@@ -1460,54 +1463,6 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
           <div ref={transcriptEndRef} />
         </div>
 
-        {/* Simulated Patient Voice Replies & Manual Input */}
-        <div className="px-4 py-2.5 border-t border-slate-200 bg-slate-50/80 space-y-2">
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
-            {SIMULATED_REPLIES.map((sim) => {
-              const btnStyle =
-                sim.tone === 'confirm'
-                  ? 'border-emerald-300 hover:bg-emerald-50 text-emerald-900'
-                  : sim.tone === 'probe'
-                    ? 'border-amber-300 hover:bg-amber-50 text-amber-900'
-                    : sim.tone === 'urgent'
-                      ? 'border-red-300 hover:bg-red-50 text-red-900'
-                      : sim.tone === 'no_answer'
-                        ? 'border-slate-300 hover:bg-slate-100 text-slate-700'
-                        : 'border-sky-200 hover:bg-sky-50 text-sky-900';
-
-              return (
-                <button
-                  key={sim.id}
-                  type="button"
-                  disabled={isProcessingTurn}
-                  onClick={() => void handleSimulatedReply(sim.utterance)}
-                  className={`text-left px-2 py-1.5 rounded border bg-white text-[11px] font-medium transition-colors truncate cursor-pointer disabled:opacity-50 ${btnStyle}`}
-                  title={sim.utterance}
-                >
-                  {sim.label}
-                </button>
-              );
-            })}
-          </div>
-
-          <form onSubmit={handleManualSubmit} className="flex items-center gap-1.5">
-            <input
-              type="text"
-              value={manualInput}
-              onChange={(e) => setManualInput(e.target.value)}
-              placeholder="Or type patient's spoken response..."
-              className="flex-1 bg-white border border-slate-300 rounded px-2.5 py-1.5 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-sky-600"
-            />
-            <button
-              type="submit"
-              disabled={isProcessingTurn || !manualInput.trim()}
-              className="inline-flex items-center gap-1 px-3 py-1.5 rounded bg-sky-700 hover:bg-sky-800 text-white text-xs font-medium cursor-pointer disabled:opacity-40"
-            >
-              <Send className="w-3.5 h-3.5" />
-              Send
-            </button>
-          </form>
-        </div>
       </section>
     </div>
   );

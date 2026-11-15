@@ -69,7 +69,7 @@ const CALL_TURN_SCHEMA = {
     outcome: {
       type: Type.STRING,
       description:
-        'Exactly one of: continue_probe, cancellation_reason_requested, cancelled, confirmed, declined_classified, no_answer.',
+        'Exactly one of: continue_probe, cancellation_reason_requested, cancelled, confirmed, declined_classified, call_ended, no_answer.',
     },
     needsProbe: {
       type: Type.BOOLEAN,
@@ -80,7 +80,7 @@ const CALL_TURN_SCHEMA = {
       type: Type.STRING,
       nullable: true,
       description:
-        'For declined_classified or cancelled, strictly one of: "Transport", "Weather", "Scheduling", "Accessibility", "Language", "Other". Otherwise null.',
+        'For declined_classified or cancelled, strictly one of: "Transport", "Weather", "Scheduling", "Accessibility", "Language", "Fear / Anxiety", "Financial", "Other". Use Other when the reason is not disclosed. Otherwise null.',
     },
     barrierSummary: {
       type: Type.STRING,
@@ -111,13 +111,18 @@ const COORDINATOR_SYSTEM_PROMPT =
   '3. If the patient clearly confirms attendance ("yes", "I will be there", "confirmed"), set outcome="confirmed", needsProbe=false.\n' +
   '4. If the patient says they may not attend but does NOT explicitly request cancellation, set outcome="continue_probe", needsProbe=true, and ask which barrier is preventing attendance.\n' +
   '5. For a barrier without an explicit cancellation request, set outcome="declined_classified", needsProbe=false, and classify barrierCategory strictly into one of:\n' +
-  '   - "Transport" (no bus/ride, long distance >100-400 km, taxi/travel cost)\n' +
+  '   - "Transport" (no bus/ride, distance, no suitable transport)\n' +
   '   - "Weather" (snowstorm, blizzard, icy road closure, extreme sub-zero freeze)\n' +
   '   - "Scheduling" (work shift, employer conflict, caregiver clash, time of day)\n' +
   '   - "Accessibility" (mobility impairment, wheelchair needed, acute fever/dyspnea/weakness/frailty)\n' +
-  '   - "Language" (did not understand Finnish/Swedish letter, fear/confusion, needs interpreter)\n' +
+  '   - "Language" (did not understand the appointment language, needs interpreter)\n' +
+  '   - "Fear / Anxiety" (patient explicitly reports being scared, anxious, or afraid of the procedure/results)\n' +
+  '   - "Financial" (patient explicitly reports costs, money, or affordability preventing attendance)\n' +
+  '   Use these same categories for cancellations. Record only the patient-stated main reason; do not infer fear or money problems from the patient profile. Use Other if no reason is provided.\n' +
   '   - "Other"\n' +
-  '6. If acute symptoms, severe dyspnea, fever, or unsafe frailty/mobility are mentioned, set clinicalNurseAlert=true and trigger urgent oncology nurse triage.';
+  '   Tell the patient that a human care coordinator will follow up to help with the barrier; this explicit promise is what creates a coordinator follow-up task.\n' +
+  '6. If acute symptoms, severe dyspnea, fever, or unsafe frailty/mobility are mentioned, set clinicalNurseAlert=true and trigger urgent oncology nurse triage.\n' +
+  '7. CALL COMPLETION: After confirming attendance, recording a completed cancellation, or promising coordinator support, give a brief closing response and say goodbye without asking another question. If the patient asks to end the call or says goodbye before any appointment decision, return outcome="call_ended", needsProbe=false; leave the appointment unchanged. Ending the conversation is not a request to cancel the appointment. Preserve an already established appointment outcome when classifying a completed conversation. A pause, thank-you within an unfinished answer, or one completed speech turn alone does not mean the call has ended.';
 
 function normalizeCategory(raw: unknown): BarrierCategory {
   const valid: BarrierCategory[] = [
@@ -126,17 +131,21 @@ function normalizeCategory(raw: unknown): BarrierCategory {
     'Scheduling',
     'Accessibility',
     'Language',
+    'Fear / Anxiety',
+    'Financial',
     'Other',
   ];
   if (typeof raw !== 'string') return 'Other';
   const lower = raw.trim().toLowerCase();
   const exact = valid.find((v) => v.toLowerCase() === lower);
   if (exact) return exact;
-  if (/transport|distance|travel|bus|taxi|cost|money/.test(lower)) return 'Transport';
+  if (/fear|anxi|scared|afraid/.test(lower)) return 'Fear / Anxiety';
+  if (/financ|cost|money|afford/.test(lower)) return 'Financial';
+  if (/transport|distance|travel|bus|taxi/.test(lower)) return 'Transport';
   if (/weather|snow|storm|ice/.test(lower)) return 'Weather';
   if (/schedul|time|work|shift/.test(lower)) return 'Scheduling';
   if (/access|mobil|frail|symptom|fever|wheelchair/.test(lower)) return 'Accessibility';
-  if (/lang|interpret|fear|confus/.test(lower)) return 'Language';
+  if (/lang|interpret|confus/.test(lower)) return 'Language';
   return 'Other';
 }
 
@@ -189,6 +198,7 @@ async function runGeminiCallTurn(
       parsed.outcome === 'cancelled' ||
       parsed.outcome === 'declined_classified' ||
       parsed.outcome === 'no_answer' ||
+      parsed.outcome === 'call_ended' ||
       parsed.outcome === 'continue_probe'
         ? parsed.outcome
         : 'continue_probe';

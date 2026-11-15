@@ -52,6 +52,8 @@ export const BARRIER_CATEGORIES: BarrierCategory[] = [
   'Scheduling',
   'Accessibility',
   'Language',
+  'Fear / Anxiety',
+  'Financial',
   'Other',
 ];
 
@@ -136,18 +138,30 @@ export function computeBaselineRisk(params: {
   if (params.financialVulnerability) equityLanguagePoints += 5;
   if (params.accessibilityNeed) equityLanguagePoints += 4;
 
-  // 5. Missed call history & Goal 3 timeframe tightness (0..12)
-  let historyMissedPoints = Math.min(6, params.priorMissedCalls * 3);
-  const bufferDays = params.targetDaysTotal - (params.daysElapsed + params.daysUntilAppointment);
-  if (bufferDays <= 2) historyMissedPoints += 6;
-  else if (bufferDays <= 5) historyMissedPoints += 3;
+  // 5. Previous missed contacts (0..6). This is coordination history, not cancer risk.
+  const historyMissedPoints = Math.min(6, params.priorMissedCalls * 3);
+
+  // 6. Appointment coordination urgency (0..15). A near appointment adds priority only
+  // when the record already shows an access risk; an overdue appointment is urgent by itself.
+  const hasRecordedAccessRisk =
+    params.languageBarrier ||
+    params.financialVulnerability ||
+    params.accessibilityNeed ||
+    params.distanceKm >= 90 ||
+    params.priorMissedCalls > 0;
+  let appointmentTimingPoints = 0;
+  if (params.daysUntilAppointment < 0) appointmentTimingPoints = 15;
+  else if (params.daysUntilAppointment === 0) appointmentTimingPoints = 12;
+  else if (params.daysUntilAppointment <= 3 && hasRecordedAccessRisk) appointmentTimingPoints = 12;
+  else if (params.daysUntilAppointment <= 7 && hasRecordedAccessRisk) appointmentTimingPoints = 7;
 
   const total = clampScore(
     pathwayUrgencyPoints +
       ageFrailtyPoints +
       distanceWeatherPoints +
       equityLanguagePoints +
-      historyMissedPoints
+      historyMissedPoints +
+      appointmentTimingPoints
   );
 
   return {
@@ -159,6 +173,7 @@ export function computeBaselineRisk(params: {
       distanceWeatherPoints,
       equityLanguagePoints,
       historyMissedPoints,
+      appointmentTimingPoints,
     },
     goal3AtRisk: computeGoal3AtRisk({
       daysElapsed: params.daysElapsed,
@@ -175,9 +190,7 @@ export function getDefaultActionForBarrier(
 ): string {
   switch (category) {
     case 'Transport':
-      return patient.distanceKm >= 120
-        ? `Hold ${patient.pathwayStage} slot (never cancel); issue upfront Kela medical taxi voucher or Shared Regional Shuttle pickup for ${patient.municipality} (${patient.distanceKm} km).`
-        : `Hold slot & arrange Kela subsidized patient transport into ${patient.regionId === 'OYS_LAPLAND' ? 'OYS/Rovaniemi' : patient.regionId === 'KYS_SAVO' ? 'KYS Kuopio' : 'HUS Meilahti'}.`;
+      return `Review transport support for ${patient.municipality} (${patient.distanceKm} km to the care team) and confirm arrangements with the patient.`;
     case 'Weather':
       return `Activate winter storm contingency: preserve fast-track slot, pair Kela 4WD medical transport or shift pre-visit prep to remote telehealth.`;
     case 'Scheduling':
@@ -188,6 +201,10 @@ export function getDefaultActionForBarrier(
       return `Assign Care Coordinator (nimetty työntekijä) + certified ${patient.primaryLanguage} interpreter to confirm fast-track preparation instructions.`;
     case 'Other':
       return `Queue Care Coordinator (nimetty työntekijä) human callback within 4 hours while keeping appointment protected.`;
+    case 'Fear / Anxiety':
+      return 'Offer a conversation with the care team to discuss the patient’s concerns and available support.';
+    case 'Financial':
+      return 'Review available financial assistance and reimbursement eligibility with the patient.';
   }
 }
 
@@ -227,20 +244,20 @@ export function applyCallOutcomeToPatient(
     const cat = outcome.barrierCategory ?? 'Other';
     aiDetectedBarrier = cat;
     verifiedBarrier = cat;
-    humanCoordinatorRequested = true;
+    humanCoordinatorRequested = outcome.humanCoordinatorRequested ?? false;
     barrierSummary = outcome.barrierSummary ?? 'Patient cancelled after being asked for the reason.';
     recommendedAction =
       outcome.recommendedAction ??
-      'Appointment cancelled in the demo schedule; notify the care team and offer rescheduling support.';
+      'Appointment cancelled; notify the care team and offer rescheduling support.';
   } else if (outcome.callStatus === 'No Pick-Up') {
     deltaFromBaseline = 14;
-    humanCoordinatorRequested = true;
+    humanCoordinatorRequested = outcome.humanCoordinatorRequested ?? false;
     barrierSummary =
       outcome.barrierSummary ??
-      'Automated outreach unanswered / voicemail; Care Coordinator callback queued.';
+      'Automated outreach unanswered / voicemail; no follow-up promise was made.';
     recommendedAction =
       outcome.recommendedAction ??
-      'Send SMS callback link + trigger human Care Coordinator (nimetty työntekijä) outreach within 2 hours.';
+      'Try another outreach attempt. Escalate to a coordinator only after support is offered to the patient.';
   } else if (outcome.callStatus === 'Follow-Up Required (Human Callback Queued)') {
     const cat: BarrierCategory = outcome.barrierCategory ?? 'Other';
     if (!outcome.overriddenByHuman) {
