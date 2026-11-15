@@ -4,7 +4,6 @@ import { goal3ByRegion, goal3Share } from '../utils/goal3.ts';
 import { FOCUS_REGIONS, FOCUS_REGION_ORDER, REGION_MAP_PATHS, REGION_MAP_LABELS } from '../data/regions.ts';
 import { getRegionalSummaries, getAttentionRegions, getRegionCategory, REGION_CATEGORY_RULES, type RegionCategory } from '../utils/regionalSummary.ts';
 import { BARRIER_CATEGORIES } from '../utils/riskEngine.ts';
-import { summarizeCancellationReasons } from '../utils/cancellationReasons.ts';
 import type { FocusRegionId, PatientRecord } from '../types/careconnect.ts';
 
 function Goal3Bar({ label, percent, onTarget, total, strong }: { label: string; percent: number; onTarget: number; total: number; strong?: boolean }) {
@@ -31,7 +30,6 @@ export function Tab2RegionalBarrierMap({ patients, activeCallRegionId, focusRegi
   const selected = summaries.find(region => region.regionId === selectedRegion)!;
   const records = patients.filter(p => p.regionId === selectedRegion);
   const barrierRecords = records.filter(p => p.verifiedBarrier && p.callStatus !== 'Confirmed Attending');
-  const cancellations = summarizeCancellationReasons(records);
   return <>
   <section className="goal3-tile" aria-labelledby="goal3-title">
     <div className="goal3-head">
@@ -95,22 +93,13 @@ export function Tab2RegionalBarrierMap({ patients, activeCallRegionId, focusRegi
           <div><strong>{selected.veryHigh}</strong><span>Very risky</span></div>
           <div><strong>{selected.high}</strong><span>Risky</span></div>
         </div>
-        <section className="cancellation-reasons" aria-label="Regional cancellation reasons">
-          <h4>Why appointments were cancelled</h4>
-          <p>{cancellations.total} cancelled appointments</p>
-          {cancellations.total === 0 ? <p>No cancellations recorded in this region.</p> : <>
-            {cancellations.mostCommon.length > 0 && <p className="cancellation-leading"><strong>Most common:</strong> {cancellations.mostCommon.map(group => group.label).join(' · ')}{cancellations.mostCommon.length > 1 ? ' (tied)' : ''}</p>}
-            <div className="cancellation-reason-list">{cancellations.groups.map(group => <div key={group.category} className={'cancellation-reason-row' + (highlight?.regionId === selectedRegion && highlight.cancelled && highlight.barrier === group.category ? ' barrier-updated' : '')}>
-              <div><span>{group.label}</span><strong>{group.count} <small>({group.percent}%)</small></strong></div>
-              <meter min={0} max={cancellations.total} value={group.count} aria-label={group.label + ': ' + group.count + ' of ' + cancellations.total + ' cancellations'} />
-            </div>)}</div>
-          </>}
-        </section>
-        <section className="recorded-barriers" aria-label="Barriers from calls, appointment held"><h4>Barriers from calls · appointment held</h4>
+        <section className="recorded-barriers" aria-label="Attendance barriers">
+        <h4>Attendance barriers</h4>
         <div className="region-barriers">{BARRIER_CATEGORIES.map(barrier => {
-          const count = barrierRecords.filter(p => p.callStatus !== 'Appointment Cancelled' && p.verifiedBarrier === barrier).length;
-          const isNew = highlight?.regionId === selectedRegion && !highlight.cancelled && highlight.barrier === barrier;
-          return <div key={barrier} className={isNew ? 'barrier-updated' : undefined}><span>{barrier}</span><meter min={0} max={Math.max(1, ...BARRIER_CATEGORIES.map(b => barrierRecords.filter(p => p.callStatus !== 'Appointment Cancelled' && p.verifiedBarrier === b).length))} value={count} aria-label={barrier} /><strong>{count}{isNew && <small> +1</small>}</strong></div>;
+          const count = barrierRecords.filter(p => p.verifiedBarrier === barrier).length;
+          const isNew = highlight?.regionId === selectedRegion && highlight.barrier === barrier;
+          const maxCount = Math.max(1, ...BARRIER_CATEGORIES.map(b => barrierRecords.filter(p => p.verifiedBarrier === b).length));
+          return <div key={barrier} className={isNew ? 'barrier-updated' : undefined}><span>{barrier}</span><meter min={0} max={maxCount} value={count} aria-label={barrier + ': ' + count} /><strong>{count}{isNew && <small> +1</small>}</strong></div>;
         })}</div>
         </section>
         <button type="button" className="region-support-button" onClick={() => onJumpToSimulator(selectedRegion)}>Plan regional support <ArrowRight size={20} aria-hidden="true" /></button>
