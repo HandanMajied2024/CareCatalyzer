@@ -57,6 +57,7 @@ import type {
 } from '../types/careconnect.ts';
 import { BARRIER_CATEGORIES, RISK_TIERS } from '../utils/riskEngine.ts';
 import { float32ToPcm16Base64, voiceAudio } from '../utils/voiceAudio.ts';
+import { paginatePatients } from '../utils/pagination.ts';
 
 interface Tab1CallingAgentProps {
   patients: PatientRecord[];
@@ -80,7 +81,6 @@ interface Tab1CallingAgentProps {
     }
   ) => void;
   onOverrideBarrier: (patientId: string, newBarrier: BarrierCategory) => void;
-  onRequestHumanCoordinator: (patientId: string) => void;
 }
 
 interface SpeechRecognitionAlternativeLike {
@@ -354,13 +354,14 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
   onAppendTranscript,
   onApplyOutcome,
   onOverrideBarrier,
-  onRequestHumanCoordinator,
 }) => {
   const [regionFilter, setRegionFilter] = useState<FocusRegionId | 'ALL'>('ALL');
   const [stageFilter, setStageFilter] = useState<PathwayStage | 'ALL'>('ALL');
   const [tierFilter, setTierFilter] = useState<RiskTier | 'ALL'>('ALL');
   const [statusFilter, setStatusFilter] = useState<CallStatus | 'ALL'>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
+  const [queuePage, setQueuePage] = useState(1);
+  const queueListRef = useRef<HTMLDivElement>(null);
   const [detailsOpen, setDetailsOpen] = useState(true);
   const detailsPanelRef = useRef<HTMLElement | null>(null);
 
@@ -390,7 +391,11 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
 
   const isLiveCalling = activeCallPatientId === patient.id;
   const activePatientRef = useRef(patient);
-  activePatientRef.current = patient;
+  activePatientRef.current = patients.find((p) => p.id === activeCallPatientId) ?? patient;
+  const liveTranscriptRef = useRef<TranscriptLine[]>([]);
+  const endingCallRef = useRef(false);
+  const classificationVersionRef = useRef(0);
+  const [isConnecting, setIsConnecting] = useState(false);
   const isLiveRef = useRef(isLiveCalling);
   isLiveRef.current = isLiveCalling;
 
@@ -415,6 +420,9 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
       )
       .sort((a, b) => b.riskScore - a.riskScore);
   }, [patients, regionFilter, stageFilter, tierFilter, statusFilter, searchQuery]);
+  const page = paginatePatients(filteredQueue, queuePage);
+  useEffect(() => { if (queueListRef.current) queueListRef.current.scrollTop = 0; },
+    [page.page, regionFilter, stageFilter, tierFilter, statusFilter, searchQuery]);
 
   useEffect(() => {
     if (detailsOpen) {
@@ -477,11 +485,11 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
   }, []);
 
   useEffect(() => {
-    if (!isLiveCalling && voiceMode !== 'idle') {
+    if (!activeCallPatientId && voiceMode !== 'idle') {
       cleanupMediaAndSockets();
       setVoiceMode('idle');
     }
-  }, [isLiveCalling, voiceMode]);
+  }, [activeCallPatientId, voiceMode]);
 
   const speakGreeting = (target: PatientRecord) => {
     const region = FOCUS_REGIONS[target.regionId];
@@ -506,11 +514,14 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
     transcript: TranscriptLine[],
     latestPatientText: string
   ) => {
+    if (endingCallRef.current) return;
+    const version = ++classificationVersionRef.current;
     setIsProcessingTurn(true);
     try {
       const region = FOCUS_REGIONS[target.regionId];
       const response = await fetch('/api/classify-call', {
         method: 'POST',
+        signal: AbortSignal.timeout(20000),
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           patient: {
@@ -537,28 +548,55 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
         throw new Error(failure.error || 'Gemini could not classify the completed turn.');
       }
       const data = (await response.json()) as CallTurnApiResponse;
-      if (data.outcome === 'cancellation_reason_requested') {
+      if (endingCallRef.current || version !== classificationVersionRef.current) return;
+      if (['call_ended', 'no_answer', 'cancelled', 'confirmed', 'declined_classified'].includes(data.outcome)) {
+        await voiceAudio.waitForLivePlayback();
+        if (endingCallRef.current || version !== classificationVersionRef.current) return;
+      }
+      if (data.outcome === 'call_ended' || data.outcome === 'no_answer') {
+        endingCallRef.current = true;
+        cleanupMediaAndSockets();
+        setVoiceMode('idle');
+        onEndCall();
+        setStatusNote('Call ended · appointment unchanged.');
+      } else if (data.outcome === 'cancellation_reason_requested') {
         setStatusNote('Cancellation requested — waiting for the patient’s reason.');
       } else if (data.outcome === 'cancelled') {
+        endingCallRef.current = true;
         onApplyOutcome(target.id, {
           callStatus: 'Appointment Cancelled',
           barrierCategory: data.barrierCategory ?? 'Other',
           barrierSummary: data.barrierSummary ?? latestPatientText,
           recommendedAction: data.recommendedAction,
           clinicalNurseAlert: data.clinicalNurseAlert,
-          humanCoordinatorRequested: true,
+          humanCoordinatorRequested: false,
         });
         setStatusNote('Appointment cancelled after the reason was requested.');
         cleanupMediaAndSockets();
         setVoiceMode('idle');
         onEndCall();
+      } else if (data.outcome === 'confirmed' || data.outcome === 'declined_classified') {
+        onApplyOutcome(target.id, {
+          callStatus: data.outcome === 'confirmed' ? 'Confirmed Attending' : 'Follow-Up Required (Human Callback Queued)',
+          barrierCategory: data.barrierCategory,
+          barrierSummary: data.barrierSummary,
+          recommendedAction: data.recommendedAction,
+          clinicalNurseAlert: data.clinicalNurseAlert,
+          humanCoordinatorRequested: data.outcome === 'declined_classified',
+        });
+        endingCallRef.current = true;
+        cleanupMediaAndSockets();
+        setVoiceMode('idle');
+        onEndCall();
+        setStatusNote(data.outcome === 'confirmed' ? 'Call ended · attendance confirmed.' : 'Call ended · coordinator follow-up recorded.');
       }
     } catch (error) {
+      if (version !== classificationVersionRef.current) return;
       setStatusNote(
         error instanceof Error ? error.message : 'Gemini could not classify the completed turn.'
       );
     } finally {
-      setIsProcessingTurn(false);
+      if (version === classificationVersionRef.current) setIsProcessingTurn(false);
     }
   };
 
@@ -713,7 +751,7 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
         .webkitSpeechRecognition;
 
     if (!SpeechRecCtor) {
-      setStatusNote('Guided mode active — use Simulated Voice Replies or text box below.');
+      setStatusNote('Microphone unavailable. Check browser microphone permissions and try again.');
       setVoiceMode('guided');
       return;
     }
@@ -743,16 +781,24 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
       rec.start();
       speechRecRef.current = rec;
       setMicActive(true);
-      setStatusNote('Web Speech Recognition listening — speak naturally or simulate reply.');
+      setStatusNote('Listening — speak naturally.');
     } catch {
       setVoiceMode('guided');
-      setStatusNote('Guided mode active — use Simulated Patient Voice Replies below.');
+      setStatusNote('Microphone unavailable. Check browser microphone permissions and try again.');
     }
   };
 
   const handleStartLiveMicCall = async () => {
+    if (activeCallPatientId || isConnecting || isProcessingTurn) return;
+    setIsConnecting(true);
+    try {
     cleanupMediaAndSockets();
     const target = activePatientRef.current;
+    endingCallRef.current = false;
+    classificationVersionRef.current += 1;
+    liveTranscriptRef.current = [];
+    liveAiBufferRef.current = '';
+    liveUserBufferRef.current = '';
     setStatusNote('Checking Gemini connection…');
     try {
       const response = await fetch('/api/health');
@@ -825,6 +871,7 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
     };
 
     ws.onmessage = (evt) => {
+      if (wsRef.current !== ws) return;
       try {
         const msg = JSON.parse(String(evt.data)) as {
           type?: string;
@@ -876,6 +923,8 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
             setMicActive(true);
           } else {
             cleanupMediaAndSockets();
+            setVoiceMode('idle');
+            onEndCall();
             setStatusNote('This browser does not support live microphone audio.');
           }
           return;
@@ -900,7 +949,7 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
 
         if (msg.type === 'turn_complete') {
           setIsAiSpeaking(false);
-          const completedTranscript = [...activePatientRef.current.transcript];
+          const completedTranscript = [...liveTranscriptRef.current];
           const pendingTypedLine = pendingTypedLiveLineRef.current;
           const liveUserText =
             liveUserBufferRef.current.trim() || pendingTypedLine?.text.trim() || '';
@@ -933,6 +982,7 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
             onAppendTranscript(activePatientRef.current.id, aiLine);
             liveAiBufferRef.current = '';
           }
+          liveTranscriptRef.current = completedTranscript;
           micSendEnabledRef.current = true;
           setStatusNote('Listening — speak now or interrupt the next response.');
           if (liveUserText) {
@@ -955,8 +1005,11 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
 
         if (msg.type === 'fallback') {
           switchedToFallback = true;
-          cleanupMediaAndSockets();
-          startWebSpeechFallback(activePatientRef.current);
+          void handleHangUpAndClassify();
+          return;
+        }
+        if (msg.type === 'live_closed') {
+          void handleHangUpAndClassify();
         }
       } catch {
         // noop
@@ -966,16 +1019,18 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
     ws.onerror = () => {
       if (!switchedToFallback) {
         switchedToFallback = true;
-        cleanupMediaAndSockets();
-        startWebSpeechFallback(activePatientRef.current);
+        void handleHangUpAndClassify();
       }
     };
 
     ws.onclose = () => {
-      if (!switchedToFallback && isLiveRef.current && voiceMode === 'gemini-live') {
-        setMicActive(false);
+      if (!switchedToFallback && wsRef.current === ws) {
+        void handleHangUpAndClassify();
       }
     };
+    } finally {
+      setIsConnecting(false);
+    }
   };
 
   const handleStartGuidedCall = () => {
@@ -984,21 +1039,40 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
     onStartCall(target.id);
     setVoiceMode('guided');
     voiceAudio.playDialTone();
-    setStatusNote('AI Outreach Call live — click a Simulated Patient Reply or type response.');
+    setStatusNote('Call connected.');
     speakGreeting(target);
   };
 
   const handleHangUpAndClassify = async () => {
-    const target = activePatientRef.current;
+    if (endingCallRef.current) return;
+    endingCallRef.current = true;
+    classificationVersionRef.current += 1;
+    const transcript = [...liveTranscriptRef.current];
+    for (const [speaker, text] of [
+      ['Patient', liveUserBufferRef.current.trim()],
+      ['AI Coordinator', liveAiBufferRef.current.trim()],
+    ] as const) {
+      if (!text) continue;
+      const line: TranscriptLine = { id: `end-${speaker}-${Date.now()}`, speaker, text, timestamp: nowTime() };
+      transcript.push(line);
+      onAppendTranscript(activePatientRef.current.id, line);
+    }
+    liveUserBufferRef.current = '';
+    liveAiBufferRef.current = '';
+    const target = { ...activePatientRef.current, transcript };
+    cleanupMediaAndSockets();
+    setVoiceMode('idle');
+    onEndCall();
     const hadPatientLines = target.transcript.some((t) => t.speaker === 'Patient');
     let completionNote = 'Call finished.';
 
-    if (voiceMode === 'gemini-live' && hadPatientLines) {
+    if (hadPatientLines) {
       setIsProcessingTurn(true);
       try {
         const region = FOCUS_REGIONS[target.regionId];
         const resp = await fetch('/api/classify-call', {
           method: 'POST',
+          signal: AbortSignal.timeout(20000),
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             patient: {
@@ -1032,7 +1106,7 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
               barrierSummary: data.barrierSummary,
               recommendedAction: data.recommendedAction,
               clinicalNurseAlert: data.clinicalNurseAlert,
-              humanCoordinatorRequested: true,
+              humanCoordinatorRequested: false,
             });
             completionNote = 'Appointment cancelled after the reason was requested.';
           } else if (data.outcome === 'confirmed') {
@@ -1059,9 +1133,6 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
       }
     }
 
-    cleanupMediaAndSockets();
-    setVoiceMode('idle');
-    onEndCall();
     setStatusNote(completionNote);
   };
 
@@ -1113,7 +1184,8 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
     ['Age + G8', riskBreakdown.ageFrailtyPoints, 20, HeartPulse],
     ['Distance', riskBreakdown.distanceWeatherPoints, 24, Route],
     ['Access', riskBreakdown.equityLanguagePoints, 16, Languages],
-    ['Missed + time', riskBreakdown.historyMissedPoints, 12, PhoneMissed],
+    ['Missed calls', riskBreakdown.historyMissedPoints, 6, PhoneMissed],
+    ['Timing', riskBreakdown.appointmentTimingPoints, 15, CalendarClock],
   ] as const;
   const stageIndex = PATHWAY_STEPS.findIndex((s) => s.stage === patient.pathwayStage);
   const voiceLabel =
@@ -1173,7 +1245,7 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
               <input
                 type="text"
                 value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
+                onChange={(e) => { setSearchQuery(e.target.value); setQueuePage(1); }}
                 placeholder="Search"
                 aria-label="Search patient, municipality, or ID"
                 className="min-h-11 w-full rounded-full border border-cc-line bg-white pl-12 pr-4 text-base text-black placeholder:text-cc-muted focus:border-cc-blue focus:outline-none"
@@ -1182,7 +1254,7 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
 
             <select
               value={regionFilter}
-              onChange={(e) => setRegionFilter(e.target.value as FocusRegionId | 'ALL')}
+              onChange={(e) => { setRegionFilter(e.target.value as FocusRegionId | 'ALL'); setQueuePage(1); }}
               aria-label="Filter queue by region"
               className={selectClass}
             >
@@ -1196,7 +1268,7 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
 
             <select
               value={stageFilter}
-              onChange={(e) => setStageFilter(e.target.value as PathwayStage | 'ALL')}
+              onChange={(e) => { setStageFilter(e.target.value as PathwayStage | 'ALL'); setQueuePage(1); }}
               aria-label="Filter queue by pathway stage"
               className={selectClass}
             >
@@ -1208,7 +1280,7 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
 
             <select
               value={tierFilter}
-              onChange={(e) => setTierFilter(e.target.value as RiskTier | 'ALL')}
+              onChange={(e) => { setTierFilter(e.target.value as RiskTier | 'ALL'); setQueuePage(1); }}
               aria-label="Filter queue by risk tier"
               className={selectClass}
             >
@@ -1222,7 +1294,7 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
 
             <select
               value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value as CallStatus | 'ALL')}
+              onChange={(e) => { setStatusFilter(e.target.value as CallStatus | 'ALL'); setQueuePage(1); }}
               aria-label="Filter queue by call status"
               className={selectClass}
             >
@@ -1237,11 +1309,13 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
         </div>
 
         <div
+          ref={queueListRef}
           className={`min-h-0 flex-1 divide-y divide-cc-line ${
             detailsOpen ? 'clinical-scroll overflow-y-auto' : ''
           }`}
         >
-          {filteredQueue.map((p) => {
+          {page.items.length === 0 && <p className="p-5 text-base text-cc-muted">No patients match these filters.</p>}
+          {page.items.map((p) => {
             const isExpanded = detailsOpen && p.id === patient.id;
             const isRecent = p.id === recentlyUpdatedId;
 
@@ -1311,6 +1385,11 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
             );
           })}
         </div>
+        <nav className="patient-pagination" aria-label="Patient pages">
+          <button type="button" disabled={page.page === 1} onClick={() => setQueuePage(page.page - 1)}>Previous</button>
+          <span role="status">Page {page.page} of {page.pageCount}</span>
+          <button type="button" disabled={page.page === page.pageCount} onClick={() => setQueuePage(page.page + 1)}>Next</button>
+        </nav>
       </section>
 
       {/* Right: selected patient + call console */}
@@ -1511,33 +1590,12 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
               </button>
             )}
 
-            <button
-              type="button"
-              onClick={() => onRequestHumanCoordinator(patient.id)}
-              disabled={patient.humanCoordinatorRequested}
-              aria-label={
-                patient.humanCoordinatorRequested
-                  ? 'Coordinator follow-up requested'
-                  : 'Request coordinator follow-up'
-              }
-              title={
-                patient.humanCoordinatorRequested
-                  ? 'Coordinator follow-up requested'
-                  : 'Request coordinator follow-up'
-              }
-              className={`inline-flex min-h-12 cursor-pointer items-center gap-2 rounded-full px-5 text-base font-semibold transition-colors ${
-                patient.humanCoordinatorRequested
-                  ? 'bg-cc-yellow-soft text-black'
-                  : 'border border-cc-line bg-white hover:bg-cc-surface'
-              }`}
-            >
-              {patient.humanCoordinatorRequested ? (
-                <Check aria-hidden="true" className="h-5 w-5" />
-              ) : (
+            {patient.humanCoordinatorRequested && (
+              <span className="inline-flex min-h-12 items-center gap-2 rounded-full bg-cc-yellow-soft px-5 text-base font-semibold text-black" title="Coordinator follow-up promised">
                 <UserCheck aria-hidden="true" className="h-5 w-5" />
-              )}
-              Coordinator
-            </button>
+                Coordinator
+              </span>
+            )}
 
             <span
               className="ml-auto inline-flex items-center gap-1.5 rounded-full bg-cc-surface px-3 py-1.5 text-sm font-medium"

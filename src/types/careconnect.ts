@@ -1,4 +1,4 @@
-export type FocusRegionId = 'OYS_LAPLAND' | 'KYS_SAVO' | 'HUS_UUSIMAA';
+export type FocusRegionId = '01' | '02' | '04' | '05' | '06' | '07' | '08' | '09' | '10' | '11' | '12' | '13' | '14' | '15' | '16' | '17' | '18' | '19' | '21';
 
 export type PathwayStage = 'Referral' | 'Diagnostic Workup' | 'Treatment Initiation';
 
@@ -23,6 +23,8 @@ export type BarrierCategory =
   | 'Scheduling'
   | 'Accessibility'
   | 'Language'
+  | 'Fear / Anxiety'
+  | 'Financial'
   | 'Other';
 
 export interface TranscriptLine {
@@ -39,11 +41,13 @@ export interface RiskFactorBreakdown {
   distanceWeatherPoints: number;
   equityLanguagePoints: number;
   historyMissedPoints: number;
+  appointmentTimingPoints: number;
 }
 
 export interface PatientRecord {
   id: string;
   name: string;
+  phoneNumber: string;
   age: number;
   municipality: string;
   wellbeingCounty: string;
@@ -91,15 +95,7 @@ export interface FocusRegionMeta {
   finnishName: string;
   hubCity: string;
   hubHospital: string;
-  hubXZ: [number, number];
-  labelAnchorXZ: [number, number];
-  polygonXZ: Array<[number, number]>;
-  terrainFill: string;
-  accentColor: string;
-  profileTag: string;
-  winterExposureIndex: number; // 0..1
-  counties: string[];
-  equityChallenge: string;
+  municipalities: string[];
 }
 
 export interface CallTurnApiResponse {
@@ -110,6 +106,7 @@ export interface CallTurnApiResponse {
     | 'cancelled'
     | 'confirmed'
     | 'declined_classified'
+    | 'call_ended'
     | 'no_answer';
   needsProbe: boolean;
   barrierCategory: BarrierCategory | null;

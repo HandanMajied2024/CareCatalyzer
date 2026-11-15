@@ -173,6 +173,26 @@ class VoiceAudioController {
       this.nextPlaybackTime = this.playbackCtx.currentTime;
     }
   }
+
+  public async waitForLivePlayback(): Promise<void> {
+    const sources = [...this.activeSources];
+    if (sources.length === 0) return;
+    // A suspended audio device must not leave a completed call stuck indefinitely.
+    await new Promise<void>((resolve) => {
+      const remaining = new Set(sources);
+      const finish = () => {
+        window.clearTimeout(timeout);
+        for (const source of sources) source.removeEventListener('ended', ended);
+        resolve();
+      };
+      const ended = (event: Event) => {
+        remaining.delete(event.target as AudioBufferSourceNode);
+        if (remaining.size === 0) finish();
+      };
+      const timeout = window.setTimeout(finish, 15000);
+      for (const source of sources) source.addEventListener('ended', ended);
+    });
+  }
 }
 
 export function float32ToPcm16Base64(float32: Float32Array): string {

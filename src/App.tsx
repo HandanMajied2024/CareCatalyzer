@@ -1,5 +1,8 @@
 import React, { useMemo, useRef, useState } from 'react';
-import { Activity, AlertTriangle, ChevronDown, CircleCheck, Map as MapIcon, Users } from 'lucide-react';
+import { Activity, UsersRound, MapPinned, HandHeart, FlaskConical } from 'lucide-react';
+import { finishPatientCall } from './utils/callLifecycle.ts';
+import { getAttentionRegions, getRegionalSummaries } from './utils/regionalSummary.ts';
+import { getEligiblePatients } from './utils/simulationEngine.ts';
 import { Tab1CallingAgent } from './components/Tab1CallingAgent.tsx';
 import { Tab2RegionalBarrierMap } from './components/Tab2RegionalBarrierMap.tsx';
 import { Tab3InterventionSimulator } from './components/Tab3InterventionSimulator.tsx';
@@ -24,15 +27,23 @@ import {
 
 export function App() {
   const patientSection = useRef<HTMLElement>(null);
-  const planningSection = useRef<HTMLDetailsElement>(null);
+  const [activeTab, setActiveTab] = useState<'patients' | 'regional' | 'support'>('patients');
+  const tabs = [
+    { id: 'patients', label: 'Patients', icon: UsersRound },
+    { id: 'regional', label: 'Regional summary', icon: MapPinned },
+    { id: 'support', label: 'Regional support', icon: HandHeart },
+  ] as const;
+  const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const [patients, setPatients] = useState<PatientRecord[]>(INITIAL_PATIENTS);
   const [selectedPatientId, setSelectedPatientId] = useState<string>(FEATURED_DEMO_PATIENT_ID);
   const [activeCallPatientId, setActiveCallPatientId] = useState<string | null>(null);
+  const callBeforeStartRef = useRef<{ id: string; status: CallStatus } | null>(null);
   const [recentlyUpdatedId, setRecentlyUpdatedId] = useState<string | null>(null);
 
   // Shared dashboard state
-  const [simRegionId, setSimRegionId] = useState<FocusRegionId>('OYS_LAPLAND');
-  const [severeWeatherActive, setSevereWeatherActive] = useState<boolean>(true);
+  const [simRegionId, setSimRegionId] = useState<FocusRegionId | null>(null);
+  const attentionRegions = useMemo(() => getAttentionRegions(patients), [patients]);
+  const defaultRegionId = useMemo(() => getRegionalSummaries(patients)[0].regionId, [patients]);
   const [deployedActions, setDeployedActions] = useState<DeployedActionLog[]>([]);
   const [demoStepNotice, setDemoStepNotice] = useState<string | null>(null);
 
@@ -41,12 +52,8 @@ export function App() {
     return patients.find((p) => p.id === activeCallPatientId)?.regionId ?? null;
   }, [patients, activeCallPatientId]);
 
-  const pathwayAlertsCount = useMemo(
-    () => patients.filter((p) => p.goal3AtRisk || p.clinicalNurseAlert).length,
-    [patients]
-  );
-
   const handleStartCall = (patientId: string) => {
+    callBeforeStartRef.current = { id: patientId, status: patients.find((p) => p.id === patientId)?.callStatus ?? 'Pending Call' };
     setActiveCallPatientId(patientId);
     setPatients((prev) =>
       prev.map((p) => (p.id === patientId ? { ...p, callStatus: 'Calling Live' } : p))
@@ -54,10 +61,13 @@ export function App() {
   };
 
   const handleEndCall = () => {
+    const previous = callBeforeStartRef.current;
+    callBeforeStartRef.current = null;
     setActiveCallPatientId(null);
     setPatients((prev) =>
       prev.map((p) =>
-        p.callStatus === 'Calling Live' ? { ...p, callStatus: 'Pending Call' } : p
+        p.id === previous?.id || p.callStatus === 'Calling Live'
+          ? finishPatientCall(p, p.id === previous?.id ? previous.status : 'Pending Call') : p
       )
     );
   };
@@ -128,59 +138,19 @@ export function App() {
     markRecentlyUpdated(patientId);
   };
 
-  const handleRequestHumanCoordinator = (patientId: string) => {
-    setPatients((prev) =>
-      prev.map((p) =>
-        p.id === patientId
-          ? {
-              ...p,
-              humanCoordinatorRequested: true,
-              callStatus:
-                p.callStatus === 'Pending Call'
-                  ? 'Follow-Up Required (Human Callback Queued)'
-                  : p.callStatus,
-              recommendedAction:
-                p.recommendedAction ??
-                `Human Care Coordinator (nimetty työntekijä) callback queued for ${p.name} — appointment protected.`,
-              transcript: [
-                ...p.transcript,
-                {
-                  id: `sys-coord-${Date.now()}`,
-                  speaker: 'System',
-                  text: 'Human Care Coordinator (nimetty työntekijä) callback requested. Appointment held.',
-                  timestamp: new Date().toLocaleTimeString('en-GB', {
-                    hour: '2-digit',
-                    minute: '2-digit',
-                    second: '2-digit',
-                  }),
-                },
-              ],
-            }
-          : p
-      )
-    );
-    markRecentlyUpdated(patientId);
-  };
-
   const handleDeployIntervention = (
     regionId: FocusRegionId,
-    intervention: InterventionComparison,
-    weatherActive: boolean
+    intervention: InterventionComparison
   ) => {
-    let affectedCount = 0;
+    const affectedIds = new Set(getEligiblePatients(patients, regionId, intervention.id).map(p => p.id));
+    const affectedCount = affectedIds.size;
+    if (!affectedCount) return;
     setPatients((prev) =>
       prev.map((p) => {
-        const eligible =
-          p.regionId === regionId &&
-          (p.callStatus === 'Follow-Up Required (Human Callback Queued)' ||
-            p.goal3AtRisk ||
-            p.distanceKm >= 100);
-        if (!eligible) return p;
-        affectedCount += 1;
+        if (!affectedIds.has(p.id)) return p;
         return {
           ...p,
           deployedOperationAction: intervention.actionTemplate,
-          humanCoordinatorRequested: true,
         };
       })
     );
@@ -194,52 +164,69 @@ export function App() {
       regionId,
       interventionId: intervention.id,
       interventionName: intervention.name,
-      severeWeatherActive: weatherActive,
+      severeWeatherActive: false,
       affectedPatientCount: affectedCount,
       taskSummary: `${intervention.actionTemplate} (queued for ${affectedCount} flagged patients in ${FOCUS_REGIONS[regionId].shortLabel}).`,
     };
     setDeployedActions((prev) => [log, ...prev]);
     setDemoStepNotice(
-      `Action Plan Deployed: ${intervention.shortName} queued for ${affectedCount} patients in ${FOCUS_REGIONS[regionId].shortLabel}. Patient tasks have been updated below.`
+      `Support plan saved: ${intervention.shortName} for ${affectedCount} patients in ${FOCUS_REGIONS[regionId].shortLabel}.`
     );
   };
 
   function showPatients() {
-    patientSection.current?.scrollIntoView({ block: 'start' });
-    patientSection.current?.focus({ preventScroll: true });
+    setActiveTab('patients');
+    requestAnimationFrame(() => patientSection.current?.focus({ preventScroll: true }));
   }
 
   function openPlanning(regionId: FocusRegionId) {
     setSimRegionId(regionId);
-    if (planningSection.current) {
-      planningSection.current.open = true;
-      planningSection.current.scrollIntoView({ block: 'start' });
-      planningSection.current.querySelector('summary')?.focus({ preventScroll: true });
-    }
+    setActiveTab('support');
+    tabRefs.current[2]?.focus();
   }
 
   return (
     <div className="care-dashboard min-h-screen">
-      <a className="dashboard-skip" href="#patients">Skip to patients</a>
+      <a className="dashboard-skip" href="#patients" onClick={showPatients}>Skip to patients</a>
       <header className="dashboard-header">
-        <div className="dashboard-brand"><Activity aria-hidden="true" /><h1>CareCatalyzer</h1></div>
+        <div className="dashboard-brand"><Activity aria-hidden="true" /><h1>CareCatalyst</h1></div>
         <div className="dashboard-actions">
-          <span className="dashboard-stat" title="Demo patients" aria-label={`${patients.length} demo patients`}>
-            <Users aria-hidden="true" />{patients.length}
-          </span>
-          <span className="dashboard-stat dashboard-stat-alert" title="Timing alerts" aria-label={`${pathwayAlertsCount} timing alerts`}>
-            <AlertTriangle aria-hidden="true" />{pathwayAlertsCount}
-          </span>
+          <span className="synthetic-badge" title="All patients are synthetic. Regional statistics are public, aggregated data."><FlaskConical aria-hidden="true" />Synthetic patients · demo data</span>
+          <span className="dashboard-stat" title="Synthetic patients in queue"><UsersRound aria-hidden="true" />{patients.length}</span>
         </div>
       </header>
       <main className="dashboard-main">
-        {demoStepNotice && (
-          <p className="dashboard-notice" role="status">
-            <CircleCheck aria-hidden="true" />
-            <span>{demoStepNotice}</span>
-          </p>
-        )}
-        <section id="patients" ref={patientSection} tabIndex={-1} aria-label="Patient coordination" className="dashboard-section">
+        <div role="tablist" aria-label="CareCatalyst sections" className="dashboard-tabs">
+          {tabs.map((tab, index) => (
+            <button key={tab.id} ref={(element) => { tabRefs.current[index] = element; }}
+              type="button" role="tab" id={`tab-${tab.id}`} aria-controls={tab.id}
+              aria-selected={activeTab === tab.id} tabIndex={activeTab === tab.id ? 0 : -1}
+              onClick={() => setActiveTab(tab.id)}
+              onKeyDown={(event) => {
+                let next = index;
+                if (event.key === 'ArrowRight') next = (index + 1) % tabs.length;
+                else if (event.key === 'ArrowLeft') next = (index + tabs.length - 1) % tabs.length;
+                else if (event.key === 'Home') next = 0;
+                else if (event.key === 'End') next = tabs.length - 1;
+                else return;
+                event.preventDefault();
+                setActiveTab(tabs[next].id);
+                tabRefs.current[next]?.focus();
+              }}>
+              <span className="dashboard-tab-icon"><tab.icon aria-hidden="true" strokeWidth={1.8} /></span>
+              <span>{tab.label}</span>
+            </button>
+          ))}
+        </div>
+        {activeTab === 'regional' && <div className="regional-attention" role="status">
+          <div><strong>{attentionRegions.length ? 'Most attention needed' : 'No urgent cases'}</strong>
+            <span>{attentionRegions.length ? attentionRegions.map(region => FOCUS_REGIONS[region.regionId].name).join(' · ') : 'Across all 19 regions'}</span>
+            {attentionRegions.length > 0 && <small>{attentionRegions[0].urgent} urgent {attentionRegions.length > 1 ? 'in each region · tied highest count' : 'patients in the queue'}</small>}
+          </div>
+          {attentionRegions.length > 0 && <button type="button" onClick={() => openPlanning(attentionRegions[0].regionId)}>Plan support <HandHeart size={20} aria-hidden="true" /></button>}
+        </div>}
+        {demoStepNotice && activeTab === 'support' && <p className="dashboard-notice" role="status">{demoStepNotice}</p>}
+        <section id="patients" role="tabpanel" aria-labelledby="tab-patients" hidden={activeTab !== 'patients'} ref={patientSection} tabIndex={0} className="dashboard-section">
           <Tab1CallingAgent
             patients={patients}
             selectedPatientId={selectedPatientId}
@@ -251,32 +238,29 @@ export function App() {
             onAppendTranscript={handleAppendTranscript}
             onApplyOutcome={handleApplyOutcome}
             onOverrideBarrier={handleOverrideBarrier}
-            onRequestHumanCoordinator={handleRequestHumanCoordinator}
           />
         </section>
-        <section aria-labelledby="regional-heading" className="dashboard-section">
-          <h2 id="regional-heading">Regions</h2>
+        <section id="regional" role="tabpanel" aria-labelledby="tab-regional" hidden={activeTab !== 'regional'} tabIndex={0} className="dashboard-section">
+          <h2 id="regional-heading">Regional summary</h2>
           <Tab2RegionalBarrierMap
             patients={patients}
             activeCallRegionId={activeCallRegionId}
             onJumpToSimulator={openPlanning}
           />
         </section>
-        <details ref={planningSection} className="dashboard-planning">
-          <summary><MapIcon aria-hidden="true" /><span>Support plans</span><ChevronDown aria-hidden="true" className="dashboard-planning-chevron" /></summary>
+        <section id="support" role="tabpanel" aria-labelledby="tab-support" hidden={activeTab !== 'support'} tabIndex={0} className="dashboard-section">
+          <h2>Regional support</h2>
           <div className="dashboard-planning-body">
             <Tab3InterventionSimulator
               patients={patients}
-              selectedRegionId={simRegionId}
-              severeWeatherActive={severeWeatherActive}
+              selectedRegionId={simRegionId ?? defaultRegionId}
               deployedActions={deployedActions}
               onChangeRegion={setSimRegionId}
-              onToggleSevereWeather={setSevereWeatherActive}
               onDeployIntervention={handleDeployIntervention}
               onReturnToPatients={showPatients}
             />
           </div>
-        </details>
+        </section>
       </main>
     </div>
   );
