@@ -1,8 +1,11 @@
 import type { PatientRecord, FocusRegionId, RiskTier, PathwayStage, BarrierCategory } from '../types/careconnect.ts';
-import { computeBaselineRisk, applyCallOutcomeToPatient } from '../utils/riskEngine.ts';
+import { computeBaselineRisk, applyCallOutcomeToPatient, getRiskTier, clampScore } from '../utils/riskEngine.ts';
 import { FOCUS_REGIONS, FOCUS_REGION_ORDER } from './regions.ts';
 export { FOCUS_REGIONS, FOCUS_REGION_ORDER } from './regions.ts';
-export const FEATURED_DEMO_PATIENT_ID = 'LUNG-19-01';
+// SYNTHETIC DEMO DATA. No real patients. Regional statistics elsewhere are public aggregates.
+// Demo path: Patients -> Lapland + Pending -> Matti Heikkinen (Kemi) -> Call patient.
+export const FEATURED_DEMO_PATIENT_ID = 'LUNG-19-45';
+const DEMO_PATIENT = { id: FEATURED_DEMO_PATIENT_ID, name: 'Matti Heikkinen', municipality: 'Kemi' };
 
 // Synthetic fixtures: deliberately exercise 2 red, 4 orange, 1 yellow and 12 green regions.
 // These counts do not describe regional prevalence. Colours still come from live patient scores.
@@ -58,24 +61,69 @@ function createProfile(tier: RiskTier, seed: number) {
   return base;
 }
 
+// Approximate road distance (km) from each municipality to the regional care team
+// (hub city first). Hub-city patients get a short local distance from the seed.
+const MUNICIPALITY_KM: Record<FocusRegionId, [number, number]> = {
+  '01': [18, 50], '02': [55, 65], '04': [50, 55], '05': [35, 45], '06': [17, 35],
+  '07': [35, 12], '08': [55, 50], '09': [37, 95], '10': [100, 85], '11': [85, 75],
+  '12': [100, 120], '13': [60, 45], '14': [25, 60], '15': [100, 80], '16': [40, 45],
+  '17': [75, 215], '18': [105, 110], '19': [330, 115], '21': [8, 20],
+};
+function realisticDistanceKm(regionId: FocusRegionId, municipalityIndex: number, seed: number) {
+  if (municipalityIndex === 0) return 4 + seed % 22;
+  return MUNICIPALITY_KM[regionId][municipalityIndex - 1] + seed % 9 - 4;
+}
+
+// Synthetic barrier mix per region type. Sparse northern/eastern regions: distance and
+// transport dominate (in line with Finnish evidence that lung cancer patients living >50 km
+// from treatment have ~1.5x 12-month mortality). Metro regions: scheduling, fear, language.
+type BarrierWeights = Partial<Record<BarrierCategory, number>>;
+const SPARSE_REGIONS = new Set<FocusRegionId>(['19', '18', '17', '12', '10', '11', '09', '16']);
+const METRO_REGIONS = new Set<FocusRegionId>(['01', '02', '06']);
+const BARRIER_MIX: Record<'sparse' | 'metro' | 'mixed', BarrierWeights> = {
+  sparse: { Transport: 46, Weather: 12, Financial: 10, Scheduling: 10, 'Fear / Anxiety': 8, Accessibility: 8, Other: 4, Language: 2 },
+  metro: { Scheduling: 30, 'Fear / Anxiety': 22, Language: 20, Transport: 8, Financial: 8, Accessibility: 6, Other: 6 },
+  mixed: { Transport: 26, Scheduling: 22, 'Fear / Anxiety': 15, Financial: 12, Accessibility: 10, Weather: 6, Language: 4, Other: 5 },
+};
+export function regionBarrierProfile(regionId: FocusRegionId): 'sparse' | 'metro' | 'mixed' {
+  return SPARSE_REGIONS.has(regionId) ? 'sparse' : METRO_REGIONS.has(regionId) ? 'metro' : 'mixed';
+}
+// Largest-remainder apportionment, then interleaved so neighbouring records differ.
+function apportionBarriers(weights: BarrierWeights, count: number): BarrierCategory[] {
+  const entries = Object.entries(weights) as [BarrierCategory, number][];
+  const totalWeight = entries.reduce((sum, [, w]) => sum + w, 0);
+  const counts = entries.map(([category, w]) => {
+    const exact = (w / totalWeight) * count;
+    return { category, n: Math.floor(exact), rest: exact - Math.floor(exact) };
+  });
+  let missing = count - counts.reduce((sum, c) => sum + c.n, 0);
+  [...counts].sort((a, b) => b.rest - a.rest).forEach(c => { if (missing > 0) { c.n += 1; missing -= 1; } });
+  const out: BarrierCategory[] = [];
+  while (out.length < count) for (const c of counts) if (c.n > 0) { out.push(c.category); c.n -= 1; }
+  return out;
+}
+const FOLLOW_UP_SUMMARY: Record<BarrierCategory, string> = {
+  Transport: 'No suitable transport to the appointment; Kela taxi help requested.',
+  Weather: 'Winter road conditions disrupted travel; assistance requested.',
+  Scheduling: 'Appointment timing conflicts with other commitments; callback requested.',
+  'Fear / Anxiety': 'Patient feels anxious about the procedure; nurse call requested.',
+  Financial: 'Travel costs are a worry; Kela reimbursement help requested.',
+  Accessibility: 'Mobility difficulties make travel hard; escort requested.',
+  Language: 'Instructions were unclear; interpreter requested.',
+  Other: 'Patient asked for a callback without giving a reason.',
+};
+
 let sequence = 0;
-export const INITIAL_PATIENTS: PatientRecord[] = FOCUS_REGION_ORDER.flatMap((regionId, regionIndex) => {
+function buildPatient(regionId: FocusRegionId, index: number, tier: RiskTier, seed: number,
+  profile: ReturnType<typeof createProfile>, phoneSequence: number, barrierOverride?: BarrierCategory): PatientRecord {
   const region = FOCUS_REGIONS[regionId];
-  const mix = regionalMix[regionId] ?? { urgent: 0, veryHigh: 0, high: 5 + regionIndex % 6, total: 20 + regionIndex % 10 };
-  return Array.from({ length: mix.total }, (_, index) => {
-    sequence += 1;
-    const seed = regionIndex * 37 + index * 13;
-    const tier: RiskTier = index < mix.urgent ? 'Urgent'
-      : index < mix.urgent + mix.veryHigh ? 'Very High Risk'
-      : index < mix.urgent + mix.veryHigh + mix.high ? 'High Risk'
-      : index % 2 ? 'Medium' : 'Low';
-    const profile = createProfile(tier, seed);
+  const regionIndex = FOCUS_REGION_ORDER.indexOf(regionId);
     const risk = computeBaselineRisk(profile);
     let patient: PatientRecord = {
       ...profile,
       id: 'LUNG-' + regionId + '-' + String(index + 1).padStart(2, '0'),
       name: firstNames[seed % firstNames.length] + ' ' + lastNames[(index + regionIndex) % lastNames.length],
-      phoneNumber: '+358 40 000 ' + String(sequence).padStart(4, '0'),
+      phoneNumber: '+358 40 000 ' + String(phoneSequence).padStart(4, '0'),
       municipality: region.municipalities[index % region.municipalities.length],
       wellbeingCounty: '', regionId, positionXZ: [0, 0],
       cancerDiagnosis: 'Lung cancer pathway', primaryLanguage: regionId === '21' ? 'Swedish' : 'Finnish',
@@ -116,6 +164,72 @@ export const INITIAL_PATIENTS: PatientRecord[] = FOCUS_REGION_ORDER.flatMap((reg
         barrierSummary: example.reason, humanCoordinatorRequested: false,
       });
     }
+    if (barrierOverride && (patient.callStatus === 'Appointment Cancelled' || patient.callStatus === 'Follow-Up Required (Human Callback Queued)')) {
+      const cancelled = patient.callStatus === 'Appointment Cancelled';
+      patient = applyCallOutcomeToPatient(patient, {
+        callStatus: patient.callStatus, barrierCategory: barrierOverride,
+        barrierSummary: cancelled ? cancellationExamples.find(e => e.category === barrierOverride)!.reason : FOLLOW_UP_SUMMARY[barrierOverride],
+        humanCoordinatorRequested: patient.humanCoordinatorRequested,
+        clinicalNurseAlert: barrierOverride === 'Accessibility' && !cancelled ? true : patient.clinicalNurseAlert,
+      });
+    }
     return { ...patient, lastUpdatedAt: null };
+}
+
+// Pick realistic distances. Where a distance or the regional barrier label changes the score band,
+// adjust the other synthetic access flags so the intended risk tier (and thus the regional colour
+// fixture checked by tests/regions.test.ts) stays the same.
+function withRealisticDistance(regionId: FocusRegionId, index: number, tier: RiskTier, seed: number,
+  phoneSequence: number, targetTier: RiskTier, barrierOverride?: BarrierCategory): PatientRecord {
+  const baseProfile = createProfile(tier, seed);
+  const probe = buildPatient(regionId, index, tier, seed, baseProfile, phoneSequence, barrierOverride);
+  const distanceKm = realisticDistanceKm(regionId, index % 3, seed);
+  const delta = probe.riskScore - probe.baselineScore;
+  const baseScore = computeBaselineRisk(baseProfile).score;
+  let best: { profile: typeof baseProfile; diff: number } | null = null;
+  for (const languageBarrier of [baseProfile.languageBarrier, !baseProfile.languageBarrier])
+    for (const financialVulnerability of [baseProfile.financialVulnerability, !baseProfile.financialVulnerability])
+      for (const accessibilityNeed of [baseProfile.accessibilityNeed, !baseProfile.accessibilityNeed])
+        for (const priorMissedCalls of [baseProfile.priorMissedCalls, 0, 1, 2])
+          for (const g8FrailtyScore of [baseProfile.g8FrailtyScore, 17, 13, 10])
+            for (const daysUntilAppointment of [baseProfile.daysUntilAppointment, 2, 6, 10]) {
+              const candidate = { ...baseProfile, distanceKm, languageBarrier, financialVulnerability, accessibilityNeed, priorMissedCalls, g8FrailtyScore, daysUntilAppointment };
+              const score = computeBaselineRisk(candidate).score;
+              if (getRiskTier(clampScore(score + delta)) !== targetTier) continue;
+              const changes = Number(languageBarrier !== baseProfile.languageBarrier) + Number(financialVulnerability !== baseProfile.financialVulnerability)
+                + Number(accessibilityNeed !== baseProfile.accessibilityNeed) + Number(priorMissedCalls !== baseProfile.priorMissedCalls)
+                + Number(g8FrailtyScore !== baseProfile.g8FrailtyScore) + Number(daysUntilAppointment !== baseProfile.daysUntilAppointment);
+              const diff = Math.abs(score - baseScore) + changes * 0.5;
+              if (!best || diff < best.diff) best = { profile: candidate, diff };
+            }
+  if (best) {
+    const adjusted = buildPatient(regionId, index, tier, seed, best.profile, phoneSequence, barrierOverride);
+    if (adjusted.riskTier === targetTier) return adjusted;
+  }
+  if (probe.riskTier === targetTier) return probe;
+  return buildPatient(regionId, index, tier, seed, baseProfile, phoneSequence);
+}
+
+export const INITIAL_PATIENTS: PatientRecord[] = FOCUS_REGION_ORDER.flatMap((regionId, regionIndex) => {
+  const mix = regionalMix[regionId] ?? { urgent: 0, veryHigh: 0, high: 5 + regionIndex % 6, total: 20 + regionIndex % 10 };
+  const specs = Array.from({ length: mix.total }, (_, index) => {
+    sequence += 1;
+    const seed = regionIndex * 37 + index * 13;
+    const tier: RiskTier = index < mix.urgent ? 'Urgent'
+      : index < mix.urgent + mix.veryHigh ? 'Very High Risk'
+      : index < mix.urgent + mix.veryHigh + mix.high ? 'High Risk'
+      : index % 2 ? 'Medium' : 'Low';
+    const original = buildPatient(regionId, index, tier, seed, createProfile(tier, seed), sequence);
+    return { index, seed, tier, phoneSequence: sequence, original };
   });
-});
+  // Synthetic barrier labels follow the region's barrier mix (see BARRIER_MIX).
+  const weights = BARRIER_MIX[regionBarrierProfile(regionId)];
+  const overrides = new Map<number, BarrierCategory>();
+  for (const status of ['Appointment Cancelled', 'Follow-Up Required (Human Callback Queued)'] as const) {
+    const list = specs.filter(spec => spec.original.callStatus === status);
+    const categories = apportionBarriers(weights, list.length);
+    list.forEach((spec, i) => overrides.set(spec.index, categories[i]));
+  }
+  return specs.map(spec => withRealisticDistance(regionId, spec.index, spec.tier, spec.seed, spec.phoneSequence,
+    spec.original.riskTier, overrides.get(spec.index)));
+}).map(p => p.id === DEMO_PATIENT.id ? { ...p, name: DEMO_PATIENT.name, municipality: DEMO_PATIENT.municipality } : p);

@@ -1,24 +1,51 @@
 import React, { useMemo, useState } from 'react';
-import { ArrowRight, Phone, AlertCircle } from 'lucide-react';
+import { ArrowRight, Phone, AlertCircle, Target, FlaskConical } from 'lucide-react';
+import { goal3ByRegion, goal3Share } from '../utils/goal3.ts';
 import { FOCUS_REGIONS, FOCUS_REGION_ORDER, REGION_MAP_PATHS, REGION_MAP_LABELS } from '../data/regions.ts';
 import { getRegionalSummaries, getAttentionRegions, getRegionCategory, REGION_CATEGORY_RULES, type RegionCategory } from '../utils/regionalSummary.ts';
 import { BARRIER_CATEGORIES } from '../utils/riskEngine.ts';
 import { summarizeCancellationReasons } from '../utils/cancellationReasons.ts';
 import type { FocusRegionId, PatientRecord } from '../types/careconnect.ts';
 
-export function Tab2RegionalBarrierMap({ patients, activeCallRegionId, onJumpToSimulator }: {
+function Goal3Bar({ label, percent, onTarget, total, strong }: { label: string; percent: number; onTarget: number; total: number; strong?: boolean }) {
+  return <div className={'goal3-row' + (strong ? ' goal3-row-strong' : '')}>
+    <span className="goal3-label">{label}</span>
+    <div className="goal3-track" role="img" aria-label={label + ': ' + percent + '% treatment started within target time (' + onTarget + ' of ' + total + ', synthetic)'}>
+      <div className="goal3-fill" style={{ width: Math.max(percent, 12) + '%' }}>{percent}%</div>
+    </div>
+  </div>;
+}
+
+export function Tab2RegionalBarrierMap({ patients, activeCallRegionId, focusRegionId = null, highlight = null, onJumpToSimulator }: {
   patients: PatientRecord[]; activeCallRegionId: FocusRegionId | null;
+  focusRegionId?: FocusRegionId | null;
+  highlight?: { regionId: FocusRegionId; barrier: string | null; cancelled: boolean } | null;
   onJumpToSimulator: (region: FocusRegionId) => void;
 }) {
   const summaries = useMemo(() => getRegionalSummaries(patients), [patients]);
   const leaders = useMemo(() => getAttentionRegions(patients), [patients]);
   const [chosenRegion, setChosenRegion] = useState<FocusRegionId | null>(null);
-  const selectedRegion = chosenRegion ?? summaries[0].regionId;
+  const selectedRegion = chosenRegion ?? focusRegionId ?? summaries[0].regionId;
+  const goal3 = useMemo(() => goal3ByRegion(patients), [patients]);
+  const goal3National = useMemo(() => goal3Share(patients), [patients]);
   const selected = summaries.find(region => region.regionId === selectedRegion)!;
   const records = patients.filter(p => p.regionId === selectedRegion);
   const barrierRecords = records.filter(p => p.verifiedBarrier && p.callStatus !== 'Confirmed Attending');
   const cancellations = summarizeCancellationReasons(records);
-  return <div className="regions-layout">
+  return <>
+  <section className="goal3-tile" aria-labelledby="goal3-title">
+    <div className="goal3-head">
+      <h3 id="goal3-title"><Target size={22} aria-hidden="true" /> Treatment started within target time</h3>
+      <span className="synthetic-badge" title="Computed from synthetic patients' pathway events"><FlaskConical aria-hidden="true" />synthetic</span>
+    </div>
+    <div className="goal3-bars">
+      <Goal3Bar label={FOCUS_REGIONS[selectedRegion].name} {...goal3[selectedRegion]} strong />
+      {selectedRegion !== '01' && <Goal3Bar label={FOCUS_REGIONS['01'].name} {...goal3['01']} />}
+      <Goal3Bar label="Finland" {...goal3National} />
+    </div>
+    <p className="goal3-source">Goal 3 · National Cancer Strategy 2026–2035 · THL Ohjaus 21/2016. Finland publishes no regional figure for this yet — the agent's pathway events produce it.</p>
+  </section>
+  <div className="regions-layout">
     <div className="region-map-card">
       <div className="region-map-heading"><h3>Finland · 19 regions</h3><span>{patients.length} patients</span></div>
       <div className="region-map-legend" aria-label="Regional attention categories">
@@ -73,18 +100,19 @@ export function Tab2RegionalBarrierMap({ patients, activeCallRegionId, onJumpToS
           <p>{cancellations.total} cancelled appointments</p>
           {cancellations.total === 0 ? <p>No cancellations recorded in this region.</p> : <>
             {cancellations.mostCommon.length > 0 && <p className="cancellation-leading"><strong>Most common:</strong> {cancellations.mostCommon.map(group => group.label).join(' · ')}{cancellations.mostCommon.length > 1 ? ' (tied)' : ''}</p>}
-            <div className="cancellation-reason-list">{cancellations.groups.map(group => <div key={group.category} className="cancellation-reason-row">
+            <div className="cancellation-reason-list">{cancellations.groups.map(group => <div key={group.category} className={'cancellation-reason-row' + (highlight?.regionId === selectedRegion && highlight.cancelled && highlight.barrier === group.category ? ' barrier-updated' : '')}>
               <div><span>{group.label}</span><strong>{group.count} <small>({group.percent}%)</small></strong></div>
               <meter min={0} max={cancellations.total} value={group.count} aria-label={group.label + ': ' + group.count + ' of ' + cancellations.total + ' cancellations'} />
             </div>)}</div>
           </>}
         </section>
-        <details className="recorded-barriers"><summary>Other attendance barriers</summary>
+        <section className="recorded-barriers" aria-label="Barriers from calls, appointment held"><h4>Barriers from calls · appointment held</h4>
         <div className="region-barriers">{BARRIER_CATEGORIES.map(barrier => {
           const count = barrierRecords.filter(p => p.callStatus !== 'Appointment Cancelled' && p.verifiedBarrier === barrier).length;
-          return <div key={barrier}><span>{barrier}</span><meter min={0} max={Math.max(1, selected.total)} value={count} aria-label={barrier} /><strong>{count}</strong></div>;
+          const isNew = highlight?.regionId === selectedRegion && !highlight.cancelled && highlight.barrier === barrier;
+          return <div key={barrier} className={isNew ? 'barrier-updated' : undefined}><span>{barrier}</span><meter min={0} max={Math.max(1, ...BARRIER_CATEGORIES.map(b => barrierRecords.filter(p => p.callStatus !== 'Appointment Cancelled' && p.verifiedBarrier === b).length))} value={count} aria-label={barrier} /><strong>{count}{isNew && <small> +1</small>}</strong></div>;
         })}</div>
-        </details>
+        </section>
         <button type="button" className="region-support-button" onClick={() => onJumpToSimulator(selectedRegion)}>Plan regional support <ArrowRight size={20} aria-hidden="true" /></button>
       </div>
       <div className="region-ranking">
@@ -106,5 +134,6 @@ export function Tab2RegionalBarrierMap({ patients, activeCallRegionId, onJumpToS
         </div>
       </div>
     </div>
-  </div>;
+  </div>
+  </>;
 }

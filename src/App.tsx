@@ -46,6 +46,8 @@ export function App() {
   const defaultRegionId = useMemo(() => getRegionalSummaries(patients)[0].regionId, [patients]);
   const [deployedActions, setDeployedActions] = useState<DeployedActionLog[]>([]);
   const [demoStepNotice, setDemoStepNotice] = useState<string | null>(null);
+  // Last call outcome: focuses the regional summary on that region and highlights the counted barrier.
+  const [lastOutcome, setLastOutcome] = useState<{ regionId: FocusRegionId; barrier: string | null; cancelled: boolean } | null>(null);
 
   const activeCallRegionId = useMemo(() => {
     if (!activeCallPatientId) return null;
@@ -102,6 +104,8 @@ export function App() {
     setPatients((prev) =>
       prev.map((p) => (p.id === patientId ? applyCallOutcomeToPatient(p, outcome) : p))
     );
+    const regionId = patients.find((p) => p.id === patientId)?.regionId;
+    if (regionId) setLastOutcome({ regionId, barrier: outcome.barrierCategory ?? null, cancelled: outcome.callStatus === 'Appointment Cancelled' });
     markRecentlyUpdated(patientId);
   };
 
@@ -135,6 +139,8 @@ export function App() {
         return overridden;
       })
     );
+    const overrideRegion = patients.find((p) => p.id === patientId)?.regionId;
+    if (overrideRegion) setLastOutcome({ regionId: overrideRegion, barrier: newBarrier, cancelled: false });
     markRecentlyUpdated(patientId);
   };
 
@@ -245,6 +251,8 @@ export function App() {
           <Tab2RegionalBarrierMap
             patients={patients}
             activeCallRegionId={activeCallRegionId}
+            focusRegionId={lastOutcome?.regionId ?? null}
+            highlight={lastOutcome}
             onJumpToSimulator={openPlanning}
           />
         </section>
