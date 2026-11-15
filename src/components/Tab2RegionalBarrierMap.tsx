@@ -39,7 +39,7 @@ export function Tab2RegionalBarrierMap({ patients, activeCallRegionId, focusRegi
     <div className="goal3-bars">
       <Goal3Bar label={FOCUS_REGIONS[selectedRegion].name} {...goal3[selectedRegion]} strong />
       {selectedRegion !== '01' && <Goal3Bar label={FOCUS_REGIONS['01'].name} {...goal3['01']} />}
-      <Goal3Bar label="Finland" {...goal3National} />
+      <Goal3Bar label="Finland (demo)" {...goal3National} />
     </div>
     <p className="goal3-source">Goal 3 · National Cancer Strategy 2026–2035 · THL Ohjaus 21/2016. Finland publishes no regional figure for this yet — the agent's pathway events produce it.</p>
   </section>

@@ -33,7 +33,7 @@ export function Tab3InterventionSimulator({ patients, selectedRegionId, deployed
       const Icon = icons[plan.id];
       return <article className="support-plan" key={plan.id}>
         <Icon size={30} aria-hidden="true" /><h3>{plan.name}</h3><p>{plan.mechanism}</p>
-        <div className="support-plan-numbers"><div><strong>{plan.eligiblePatientsCount}</strong><span>Matching patients</span></div><div><strong>{plan.costRangeText}</strong><span>Estimated allowance</span></div></div>
+        <div className="support-plan-numbers"><div><strong>{plan.eligiblePatientsCount}</strong><span>Matching patients</span></div><div><strong>{plan.costRangeText}</strong><span>Estimated allowance · assumption</span></div></div>
         <details><summary>Cost assumptions</summary>{plan.assumptions.map(line => <p key={line}>{line}</p>)}</details>
         <button type="button" disabled={!plan.eligiblePatientsCount} onClick={() => onDeployIntervention(selectedRegionId, plan)}>Save support plan</button>
       </article>;

@@ -1511,6 +1511,7 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
                 {patient.scoreDelta !== 0 &&
                   ` ${patient.scoreDelta > 0 ? '+' : '−'} ${Math.abs(patient.scoreDelta)}`}{' '}
                 = <strong className="text-black">{patient.riskScore}</strong>/100
+                <span className="ml-2 rounded-full bg-cc-surface px-3 py-1 text-sm font-medium text-black">Weights: assumption</span>
               </p>
               {riskFactors.map(([label, points, max, Icon]) => (
                 <div key={label} className="flex items-center gap-3">

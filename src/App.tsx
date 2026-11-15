@@ -197,7 +197,7 @@ export function App() {
       <header className="dashboard-header">
         <div className="dashboard-brand"><Activity aria-hidden="true" /><h1>CareCatalyst</h1><span className="part-badge" title="Part 1 · CareCatalyst for welfare counties"><Building2 aria-hidden="true" />For counties</span></div>
         <div className="dashboard-actions">
-          <span className="synthetic-badge" title="All patients are synthetic. Regional statistics are public, aggregated data."><FlaskConical aria-hidden="true" />Synthetic patients · demo data</span>
+          <span className="synthetic-badge" title="Region boundaries: Statistics Finland (CC BY 4.0). All values: synthetic demo data."><FlaskConical aria-hidden="true" />Synthetic patients · demo data</span>
           <span className="dashboard-stat" title="Synthetic patients in queue"><UsersRound aria-hidden="true" />{patients.length}</span>
         </div>
       </header>
