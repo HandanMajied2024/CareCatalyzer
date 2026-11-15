@@ -1,13 +1,25 @@
 import React, { useMemo, useState } from 'react';
 import {
+  ArrowUp,
+  Car,
+  Check,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
+  Clock,
   CloudSnow,
   Download,
+  Euro,
   Info,
+  PhoneCall,
   Rocket,
+  Scale,
+  Timer,
+  TrendingUp,
+  Users,
+  UserCheck,
 } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import { FOCUS_REGIONS, FOCUS_REGION_ORDER } from '../data/patients.ts';
 import type {
   DeployedActionLog,
@@ -32,6 +44,38 @@ interface Tab3InterventionSimulatorProps {
   ) => void;
   onReturnToPatients: () => void;
 }
+
+const shortName = (label: string) => label.split(' / ')[0];
+
+/** Range bar: grey track, coloured band from low to high, label inside. */
+const RangeBar: React.FC<{
+  icon: LucideIcon;
+  label: string;
+  low: number;
+  high: number;
+  max: number;
+  text: string;
+  colorClass: string;
+}> = ({ icon: Icon, label, low, high, max, text, colorClass }) => {
+  const left = Math.max(0, Math.min(65, (low / max) * 100));
+  const width = Math.min(100 - left, Math.max(35, (high / max) * 100 - left));
+  return (
+    <div className="min-w-0">
+      <div className="flex items-center gap-2 text-sm text-black mb-1.5">
+        <Icon className="w-5 h-5 shrink-0" aria-hidden />
+        {label}
+      </div>
+      <div className="relative h-9 w-full bg-cc-surface rounded-full overflow-hidden">
+        <div
+          className={`absolute inset-y-0 rounded-full flex items-center justify-center px-2 transition-all duration-300 ${colorClass}`}
+          style={{ left: `${left}%`, width: `${width}%` }}
+        >
+          <span className="text-sm font-bold tabular-nums whitespace-nowrap">{text}</span>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 export const Tab3InterventionSimulator: React.FC<Tab3InterventionSimulatorProps> = ({
   patients,
@@ -88,6 +132,17 @@ export const Tab3InterventionSimulator: React.FC<Tab3InterventionSimulatorProps>
   const activeIntervention =
     interventions.find((i) => i.id === selectedInterventionId) ?? interventions[0];
 
+  // Shared scales so the three plans are visually comparable
+  const scales = useMemo(
+    () => ({
+      cost: Math.max(1, ...interventions.map((i) => i.estimatedCostEur)),
+      gain: Math.max(1, ...interventions.map((i) => i.attendanceGainPctHigh)) * 1.1,
+      days: Math.max(1, ...interventions.map((i) => i.daysSavedHigh)) * 1.1,
+      equity: Math.max(1, ...interventions.map((i) => i.equityGapReductionPctHigh)) * 1.1,
+    }),
+    [interventions]
+  );
+
   const toggleExpand = (id: InterventionId) => {
     setExpandedCards((prev) => ({ ...prev, [id]: !prev[id] }));
   };
@@ -131,76 +186,97 @@ export const Tab3InterventionSimulator: React.FC<Tab3InterventionSimulatorProps>
   };
 
   return (
-    <div className="space-y-4">
-      {/* Scenario & Stress-Test Controls Bar */}
-      <section className="bg-white border border-slate-200 rounded-lg p-4 space-y-4 shadow-2xs">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <h2 className="text-sm font-semibold text-slate-900">
-              Scenario &amp; Severe Weather Stress-Test Controls
-            </h2>
-            <p className="text-xs text-slate-500 mt-0.5">
-              Baseline rates from the demo patient cohort · Synthetic model estimates include
-              explicit 95% confidence bands
-            </p>
+    <div className="space-y-8 text-base">
+      {/* Scenario controls */}
+      <section className="bg-white border border-cc-line rounded-[20px] p-5 sm:p-8 space-y-8">
+        <div className="flex flex-wrap items-center gap-3">
+          {/* Region selector */}
+          <div
+            className="flex flex-wrap items-center gap-1 p-1 rounded-full bg-cc-surface"
+            role="group"
+            aria-label="Region"
+          >
+            {FOCUS_REGION_ORDER.map((id) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => onChangeRegion(id)}
+                aria-pressed={selectedRegionId === id}
+                title={FOCUS_REGIONS[id].name}
+                className={`min-h-11 px-4 rounded-full text-base font-medium transition-colors cursor-pointer ${
+                  selectedRegionId === id
+                    ? 'bg-black text-white'
+                    : 'text-black hover:bg-cc-line'
+                }`}
+              >
+                {shortName(FOCUS_REGIONS[id].shortLabel)}
+              </button>
+            ))}
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            {/* Region selector */}
-            <div className="flex items-center p-0.5 rounded-md bg-slate-100 border border-slate-200">
-              {FOCUS_REGION_ORDER.map((id) => (
-                <button
-                  key={id}
-                  type="button"
-                  onClick={() => onChangeRegion(id)}
-                  className={`px-2.5 py-1 rounded text-xs font-medium transition-colors cursor-pointer ${
-                    selectedRegionId === id
-                      ? 'bg-white text-sky-800 font-semibold shadow-2xs border border-slate-200'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  {FOCUS_REGIONS[id].shortLabel}
-                </button>
-              ))}
-            </div>
-
-            {/* Severe Weather Stress-Test Toggle */}
-            <button
-              type="button"
-              onClick={() => onToggleSevereWeather(!severeWeatherActive)}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border text-xs font-semibold transition-colors cursor-pointer ${
-                severeWeatherActive
-                  ? 'bg-red-50 border-red-300 text-red-800'
-                  : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-50'
+          {/* Severe weather toggle */}
+          <button
+            type="button"
+            onClick={() => onToggleSevereWeather(!severeWeatherActive)}
+            aria-pressed={severeWeatherActive}
+            title="Severe winter weather stress test"
+            className={`inline-flex items-center gap-2 min-h-11 px-4 rounded-full border text-base font-semibold transition-colors cursor-pointer ${
+              severeWeatherActive
+                ? 'bg-cc-yellow border-cc-yellow text-black'
+                : 'bg-white border-cc-line text-black hover:bg-cc-surface'
+            }`}
+          >
+            <CloudSnow className="w-5 h-5" aria-hidden />
+            Winter
+            <span
+              className={`ml-1 w-10 h-6 rounded-full p-0.5 transition-colors ${
+                severeWeatherActive ? 'bg-black' : 'bg-cc-line'
               }`}
+              aria-hidden
             >
-              <CloudSnow className="w-3.5 h-3.5" />
-              Severe Winter Weather: {severeWeatherActive ? 'ACTIVE' : 'Normal'}
-            </button>
-          </div>
+              <span
+                className={`block w-5 h-5 rounded-full bg-white transition-transform ${
+                  severeWeatherActive ? 'translate-x-4' : ''
+                }`}
+              />
+            </span>
+          </button>
         </div>
 
-        {/* Live Regional Baseline Inputs + Sliders */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 pt-3 border-t border-slate-200">
-          <div className="bg-slate-50 border border-slate-200 rounded px-3 py-2 text-xs">
-            <div className="text-[11px] text-slate-500">
-              Live Baseline ({FOCUS_REGIONS[selectedRegionId].shortLabel})
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
+          {/* Live baseline */}
+          <div className="bg-cc-surface rounded-[16px] p-5">
+            <Car className="w-6 h-6 text-cc-red" aria-hidden />
+            <div className="mt-2 text-4xl font-extrabold tabular-nums leading-none">
+              {liveRegionStats.transportWeatherRate}
+              <span className="text-lg font-medium text-cc-muted">/100</span>
             </div>
-            <div className="mt-1 font-mono tabular-nums text-slate-900 font-semibold">
-              {liveRegionStats.transportWeatherRate} / 100 Transport+Weather
-            </div>
-            <div className="text-[11px] text-slate-600 mt-0.5">
-              {liveRegionStats.followUpQueued} callbacks queued · {liveRegionStats.goal3RiskCount} with timing alerts
+            <div className="mt-2 text-sm text-cc-muted">Transport + weather</div>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <span
+                className="inline-flex items-center gap-1.5 min-h-9 px-3 rounded-full bg-white text-sm font-semibold"
+                title="Callbacks queued"
+              >
+                <PhoneCall className="w-4 h-4 text-cc-blue" aria-hidden />
+                {liveRegionStats.followUpQueued}
+              </span>
+              <span
+                className="inline-flex items-center gap-1.5 min-h-9 px-3 rounded-full bg-white text-sm font-semibold"
+                title="Timing alerts"
+              >
+                <Clock className="w-4 h-4 text-cc-yellow" aria-hidden />
+                {liveRegionStats.goal3RiskCount}
+              </span>
             </div>
           </div>
 
-          <div className="bg-slate-50 border border-slate-200 rounded px-3 py-2">
-            <div className="flex items-center justify-between text-xs mb-1">
-              <span className="text-slate-600">Monthly Pilot Budget</span>
-              <span className="font-mono tabular-nums font-semibold text-sky-800">
-                €{monthlyBudgetEur.toLocaleString()}
-              </span>
+          {/* Budget slider */}
+          <div className="bg-cc-surface rounded-[16px] p-5 flex flex-col">
+            <Euro className="w-6 h-6 text-cc-blue" aria-hidden />
+            <div className="mt-2 text-4xl font-extrabold tabular-nums leading-none">
+              €{Math.round(monthlyBudgetEur / 1000)}k
             </div>
+            <div className="mt-2 text-sm text-cc-muted">Budget / month</div>
             <input
               type="range"
               min={12000}
@@ -209,17 +285,15 @@ export const Tab3InterventionSimulator: React.FC<Tab3InterventionSimulatorProps>
               value={monthlyBudgetEur}
               onChange={(e) => setMonthlyBudgetEur(Number(e.target.value))}
               aria-label="Monthly pilot budget in euros"
-              className="w-full accent-sky-700 cursor-pointer"
+              className="mt-auto pt-3 w-full h-11 accent-cc-blue cursor-pointer"
             />
           </div>
 
-          <div className="bg-slate-50 border border-slate-200 rounded px-3 py-2">
-            <div className="flex items-center justify-between text-xs mb-1">
-              <span className="text-slate-600">Coordinator Adoption</span>
-              <span className="font-mono tabular-nums font-semibold text-sky-800">
-                {adoptionPct}%
-              </span>
-            </div>
+          {/* Adoption slider */}
+          <div className="bg-cc-surface rounded-[16px] p-5 flex flex-col">
+            <UserCheck className="w-6 h-6 text-cc-blue" aria-hidden />
+            <div className="mt-2 text-4xl font-extrabold tabular-nums leading-none">{adoptionPct}%</div>
+            <div className="mt-2 text-sm text-cc-muted">Adoption</div>
             <input
               type="range"
               min={40}
@@ -228,142 +302,157 @@ export const Tab3InterventionSimulator: React.FC<Tab3InterventionSimulatorProps>
               value={adoptionPct}
               onChange={(e) => setAdoptionPct(Number(e.target.value))}
               aria-label="Care coordinator adoption rate"
-              className="w-full accent-sky-700 cursor-pointer"
+              className="mt-auto pt-3 w-full h-11 accent-cc-blue cursor-pointer"
             />
           </div>
 
-          <div className="flex flex-col justify-center gap-1.5">
+          {/* Actions */}
+          <div className="flex flex-col justify-center gap-3">
             <button
               type="button"
               onClick={() =>
                 onDeployIntervention(selectedRegionId, activeIntervention, severeWeatherActive)
               }
-              className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-md bg-emerald-700 hover:bg-emerald-800 text-white font-semibold text-xs transition-colors cursor-pointer"
+              className="w-full inline-flex items-center justify-center gap-2 min-h-14 px-5 rounded-full bg-cc-blue hover:bg-black text-white font-semibold text-lg transition-colors cursor-pointer"
             >
-              <Rocket className="w-3.5 h-3.5" />
-              Deploy Action Plan to Care Team
+              <Rocket className="w-5 h-5" aria-hidden />
+              Deploy
             </button>
             <button
               type="button"
               onClick={handleExportPlanJson}
-              className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 text-[11px] font-medium transition-colors cursor-pointer"
+              title="Export action plan (JSON)"
+              className="w-full inline-flex items-center justify-center gap-2 min-h-11 px-5 rounded-full bg-white hover:bg-cc-surface text-black border border-cc-line text-base font-medium transition-colors cursor-pointer"
             >
-              <Download className="w-3 h-3" />
-              Export &amp; Trigger Operational Action (JSON)
+              <Download className="w-5 h-5" aria-hidden />
+              Export JSON
             </button>
           </div>
         </div>
       </section>
 
-      {/* Side-by-Side Comparison of 3 Interventions */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-stretch">
+      {/* 3 interventions side by side */}
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6 lg:gap-8 items-stretch">
         {interventions.map((item) => {
           const isSelected = item.id === selectedInterventionId;
           const isExpanded = expandedCards[item.id];
+          const costPct = Math.max(8, (item.estimatedCostEur / scales.cost) * 100);
 
           return (
             <section
               key={item.id}
-              className={`rounded-lg border flex flex-col transition-colors bg-white shadow-2xs ${
-                isSelected
-                  ? 'border-sky-600 ring-1 ring-sky-600/20'
-                  : 'border-slate-200'
+              className={`rounded-[20px] border-2 flex flex-col transition-colors bg-white ${
+                isSelected ? 'border-cc-blue' : 'border-cc-line'
               }`}
             >
-              <div className="p-4 space-y-3 flex-1">
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <h3 className="text-sm font-semibold text-slate-900">{item.name}</h3>
-                    <p className="text-[11px] text-slate-500 mt-0.5">
-                      Eligible cohort:{' '}
-                      <strong className="font-mono text-slate-800">
+              <div className="p-5 sm:p-7 space-y-6 flex-1">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <h3 className="text-xl font-bold tracking-[-0.02em] leading-tight text-black">
+                      {item.name}
+                    </h3>
+                    <div
+                      className="mt-2 inline-flex items-center gap-1.5 text-base text-cc-muted"
+                      title="Eligible patients"
+                    >
+                      <Users className="w-5 h-5" aria-hidden />
+                      <span className="font-semibold text-black tabular-nums">
                         {item.eligiblePatientsCount}
-                      </strong>{' '}
-                      patients in {FOCUS_REGIONS[selectedRegionId].shortLabel}
-                    </p>
+                      </span>
+                    </div>
                   </div>
                   <button
                     type="button"
                     onClick={() => setSelectedInterventionId(item.id)}
-                    className={`px-2.5 py-1 rounded text-[11px] font-semibold border whitespace-nowrap shrink-0 cursor-pointer ${
+                    aria-pressed={isSelected}
+                    aria-label={isSelected ? 'Selected plan' : `Select ${item.name}`}
+                    className={`inline-flex items-center justify-center gap-1.5 min-h-11 min-w-11 px-4 rounded-full text-base font-semibold border whitespace-nowrap shrink-0 cursor-pointer transition-colors ${
                       isSelected
-                        ? 'bg-sky-700 text-white border-sky-700'
-                        : 'bg-slate-50 text-slate-700 border-slate-300 hover:bg-slate-100'
+                        ? 'bg-cc-blue text-white border-cc-blue'
+                        : 'bg-white text-black border-cc-line hover:bg-cc-surface'
                     }`}
                   >
-                    {isSelected ? 'Selected Plan' : 'Select'}
+                    {isSelected ? <Check className="w-5 h-5" aria-hidden /> : 'Select'}
                   </button>
                 </div>
 
-                {/* 4 Comparison Metrics with 95% Uncertainty Ranges */}
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  <div className="bg-slate-50 border border-slate-200 rounded px-2.5 py-2">
-                    <div className="text-[10px] text-slate-500">Estimated Cost</div>
-                    <div className="mt-0.5 font-mono tabular-nums font-bold text-slate-900">
-                      €{item.estimatedCostEur.toLocaleString()}/mo
-                    </div>
-                    <div className="text-[10px] font-mono text-slate-500">{item.costRangeText}</div>
+                {/* Cost */}
+                <div title={item.costRangeText}>
+                  <div className="flex items-baseline gap-2">
+                    <Euro className="w-5 h-5 self-center" aria-hidden />
+                    <span className="text-[32px] font-extrabold tabular-nums leading-none">
+                      {item.estimatedCostEur.toLocaleString()}
+                    </span>
+                    <span className="text-sm text-cc-muted">/ month</span>
                   </div>
-
-                  <div className="bg-slate-50 border border-slate-200 rounded px-2.5 py-2">
-                    <div className="text-[10px] text-slate-500">Attendance Gain (95% CI)</div>
-                    <div className="mt-0.5 font-mono tabular-nums font-bold text-emerald-700">
-                      +{item.attendanceGainPctLow}% to +{item.attendanceGainPctHigh}%
-                    </div>
-                    <div className="text-[10px] text-slate-500">Fast-track completion</div>
-                  </div>
-
-                  <div className="bg-slate-50 border border-slate-200 rounded px-2.5 py-2">
-                    <div className="text-[10px] text-slate-500">Days Saved to Treatment</div>
-                    <div className="mt-0.5 font-mono tabular-nums font-bold text-sky-800">
-                      -{item.daysSavedLow} to -{item.daysSavedHigh} days
-                    </div>
-                    <div className="text-[10px] text-slate-500">95% uncertainty band</div>
-                  </div>
-
-                  <div className="bg-slate-50 border border-slate-200 rounded px-2.5 py-2">
-                    <div className="text-[10px] text-slate-500">Equity Gap Reduction</div>
-                    <div className="mt-0.5 font-mono tabular-nums font-bold text-amber-800">
-                      -{item.equityGapReductionPctLow}% to -{item.equityGapReductionPctHigh}%
-                    </div>
-                    <div className="text-[10px] text-slate-500">Rural vs urban parity</div>
+                  <div className="mt-3 h-3 w-full bg-cc-surface rounded-full overflow-hidden">
+                    <div
+                      className="h-full rounded-full bg-black transition-all duration-300"
+                      style={{ width: `${costPct}%` }}
+                    />
                   </div>
                 </div>
 
-                {/* Expandable Mechanism, Evidence Base & Assumptions */}
-                <div className="border-t border-slate-200 pt-2">
+                {/* Impact bars (95% bands) */}
+                <div className="space-y-4">
+                  <RangeBar
+                    icon={TrendingUp}
+                    label="Attendance"
+                    low={item.attendanceGainPctLow}
+                    high={item.attendanceGainPctHigh}
+                    max={scales.gain}
+                    text={`+${item.attendanceGainPctLow}–${item.attendanceGainPctHigh}%`}
+                    colorClass="bg-cc-green text-white"
+                  />
+                  <RangeBar
+                    icon={Timer}
+                    label="Days saved"
+                    low={item.daysSavedLow}
+                    high={item.daysSavedHigh}
+                    max={scales.days}
+                    text={`${item.daysSavedLow}–${item.daysSavedHigh} d`}
+                    colorClass="bg-cc-blue text-white"
+                  />
+                  <RangeBar
+                    icon={Scale}
+                    label="Equity gap"
+                    low={item.equityGapReductionPctLow}
+                    high={item.equityGapReductionPctHigh}
+                    max={scales.equity}
+                    text={`−${item.equityGapReductionPctLow}–${item.equityGapReductionPctHigh}%`}
+                    colorClass="bg-cc-green text-white"
+                  />
+                </div>
+
+                {/* Mechanism, evidence, assumptions (behind a click) */}
+                <div className="border-t border-cc-line pt-3">
                   <button
                     type="button"
                     onClick={() => toggleExpand(item.id)}
-                    className="w-full flex items-center justify-between text-xs font-medium text-slate-800 hover:text-sky-700 cursor-pointer py-1"
+                    aria-expanded={isExpanded}
+                    className="w-full min-h-11 flex items-center justify-between text-base font-medium text-black hover:text-cc-blue cursor-pointer"
                   >
-                    <span className="inline-flex items-center gap-1.5">
-                      <Info className="w-3.5 h-3.5 text-sky-700" />
-                      Mechanism, Evidence Base &amp; Assumptions
+                    <span className="inline-flex items-center gap-2">
+                      <Info className="w-5 h-5 text-cc-blue" aria-hidden />
+                      Evidence
                     </span>
                     {isExpanded ? (
-                      <ChevronUp className="w-4 h-4" />
+                      <ChevronUp className="w-5 h-5" aria-hidden />
                     ) : (
-                      <ChevronDown className="w-4 h-4" />
+                      <ChevronDown className="w-5 h-5" aria-hidden />
                     )}
                   </button>
 
                   {isExpanded && (
-                    <div className="mt-2 space-y-2 text-[11px] text-slate-700 leading-relaxed">
-                      <div>
-                        <strong className="text-slate-900">Why it helps:</strong> {item.mechanism}
-                      </div>
-                      <div>
-                        <strong className="text-slate-900">Public Evidence:</strong>
-                        <ul className="list-disc pl-4 mt-0.5 space-y-0.5 text-slate-700">
-                          {item.evidenceBase.map((ev, idx) => (
-                            <li key={idx}>{ev}</li>
-                          ))}
-                        </ul>
-                      </div>
-                      <div className="bg-amber-50/70 border border-amber-200 rounded p-2 text-slate-700">
-                        <strong className="text-amber-900">Synthetic Model Caveats:</strong>
-                        <ul className="list-disc pl-4 mt-0.5 space-y-0.5">
+                    <div className="mt-3 space-y-4 text-base text-black leading-normal">
+                      <p>{item.mechanism}</p>
+                      <ul className="list-disc pl-5 space-y-1 text-cc-muted">
+                        {item.evidenceBase.map((ev, idx) => (
+                          <li key={idx}>{ev}</li>
+                        ))}
+                      </ul>
+                      <div className="bg-cc-yellow-soft rounded-[12px] p-4">
+                        <ul className="list-disc pl-5 space-y-1">
                           {item.assumptions.map((asmp, idx) => (
                             <li key={idx}>{asmp}</li>
                           ))}
@@ -378,39 +467,49 @@ export const Tab3InterventionSimulator: React.FC<Tab3InterventionSimulatorProps>
         })}
       </div>
 
-      {/* Live Deployed Operational Actions Feed */}
+      {/* Deployed actions feed */}
       {deployedActions.length > 0 && (
-        <section className="bg-emerald-50 border border-emerald-200 rounded-lg p-4 space-y-2">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-center gap-2 text-xs font-semibold text-emerald-900">
-              <CheckCircle2 className="w-4 h-4 text-emerald-700" />
-              Operational Action Plans Triggered to Care Team ({deployedActions.length})
+        <section className="bg-cc-green-soft rounded-[20px] p-5 sm:p-8 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3 text-xl font-bold text-black">
+              <CheckCircle2 className="w-7 h-7 text-cc-green" aria-hidden />
+              Deployed
+              <span className="inline-flex items-center justify-center min-w-9 h-9 px-2 rounded-full bg-cc-green text-white text-base tabular-nums">
+                {deployedActions.length}
+              </span>
             </div>
             <button
               type="button"
               onClick={onReturnToPatients}
-              className="text-xs font-semibold text-sky-800 hover:underline cursor-pointer"
+              className="inline-flex items-center gap-2 min-h-11 px-4 rounded-full bg-white text-base font-semibold text-cc-blue hover:bg-cc-blue-soft cursor-pointer"
             >
-              View updated patients &uarr;
+              <ArrowUp className="w-5 h-5" aria-hidden />
+              Patients
             </button>
           </div>
 
-          <div className="space-y-1.5">
+          <div className="space-y-3">
             {deployedActions.map((act) => (
               <div
                 key={act.id}
-                className="flex flex-wrap items-center justify-between gap-2 text-xs bg-white border border-emerald-200 rounded px-3 py-2"
+                className="flex flex-wrap items-center justify-between gap-3 bg-white rounded-[12px] px-4 py-3"
               >
-                <div>
-                  <span className="font-semibold text-slate-900">{act.interventionName}</span>
-                  <span className="text-slate-600 ml-2">
-                    · {FOCUS_REGIONS[act.regionId].shortLabel}
-                    {act.severeWeatherActive ? ' (Severe Weather Active)' : ''}
-                  </span>
-                  <p className="text-[11px] text-emerald-800 mt-0.5">{act.taskSummary}</p>
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-semibold text-black">{act.interventionName}</span>
+                    <span className="text-cc-muted">· {shortName(FOCUS_REGIONS[act.regionId].shortLabel)}</span>
+                    {act.severeWeatherActive && (
+                      <CloudSnow className="w-5 h-5 text-black" aria-label="Severe weather" />
+                    )}
+                  </div>
+                  <p className="text-sm text-cc-muted mt-1">{act.taskSummary}</p>
                 </div>
-                <span className="font-mono text-[11px] text-slate-500">
-                  {act.affectedPatientCount} tasks queued · {act.deployedAt}
+                <span className="inline-flex items-center gap-3 text-sm text-cc-muted tabular-nums">
+                  <span className="inline-flex items-center gap-1.5 px-3 min-h-9 rounded-full bg-cc-green-soft text-black font-semibold">
+                    <Users className="w-4 h-4" aria-hidden />
+                    {act.affectedPatientCount}
+                  </span>
+                  {act.deployedAt}
                 </span>
               </div>
             ))}

@@ -1,5 +1,23 @@
 import React, { useMemo, useState } from 'react';
-import { Lock, ShieldCheck } from 'lucide-react';
+import {
+  Accessibility,
+  AlertTriangle,
+  CalendarClock,
+  Car,
+  CircleHelp,
+  CloudSnow,
+  Clock,
+  FlaskConical,
+  Info,
+  Languages,
+  Layers,
+  Lock,
+  PhoneMissed,
+  ShieldCheck,
+  Users,
+  X,
+} from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import {
   FINLAND_LAKES_XZ,
   FINLAND_OUTLINE_XZ,
@@ -50,11 +68,39 @@ const NEUTRAL_WEST_MID_XZ: Array<[number, number]> = [
 
 const K_ANONYMITY_THRESHOLD = 5;
 
+// Design-system tokens (primary accents only)
+const CC = {
+  red: '#e5262b',
+  blue: '#1f5eff',
+  green: '#14a44d',
+  yellow: '#ffc400',
+  grey: '#d4d4d4',
+  ink: '#0a0a0a',
+  muted: '#6b6b6b',
+  line: '#e6e6e6',
+  surface: '#f5f5f5',
+  blueSoft: '#e8efff',
+};
+
 function getRateColor(ratePer100: number): string {
-  if (ratePer100 >= 38) return '#EF4444'; // High barrier density (Red)
-  if (ratePer100 >= 20) return '#3B82F6'; // Moderate barrier density (Blue)
-  return '#10B981'; // Low barrier density (Green)
+  if (ratePer100 >= 38) return CC.red; // High barrier density
+  if (ratePer100 >= 20) return CC.yellow; // Moderate barrier density
+  return CC.green; // Low barrier density
 }
+
+const BARRIER_ICONS: Record<BarrierCategory, LucideIcon> = {
+  Transport: Car,
+  Weather: CloudSnow,
+  Scheduling: CalendarClock,
+  Accessibility: Accessibility,
+  Language: Languages,
+  Other: CircleHelp,
+};
+
+const shortName = (label: string) => label.split(' / ')[0];
+
+const selectClass =
+  'min-h-11 bg-white border border-cc-line rounded-full pl-4 pr-8 py-2 text-base text-black focus:outline-none focus:border-cc-blue cursor-pointer';
 
 export const Tab2RegionalBarrierMap: React.FC<Tab2RegionalBarrierMapProps> = ({
   patients,
@@ -135,154 +181,106 @@ export const Tab2RegionalBarrierMap: React.FC<Tab2RegionalBarrierMapProps> = ({
       : regionalAggregates.filter((r) => r.regionId === selectedRegion);
 
   return (
-    <div className="space-y-4">
-      {/* Privacy & Filter Header */}
-      <div className="bg-white border border-slate-200 rounded-lg px-4 py-3 flex flex-wrap items-center justify-between gap-3 shadow-2xs">
-        <div className="flex items-center gap-2.5">
-          <ShieldCheck className="w-4 h-4 text-emerald-700 shrink-0" />
-          <div className="text-xs">
-            <span className="font-semibold text-slate-900">
-              Aggregate-Only Regional View · Privacy Guardrail Active
-            </span>
-            <span className="text-slate-600 ml-2">
-              This summary omits patient names and transcripts; subgroups with n &lt; 5 are
-              suppressed.
-            </span>
-          </div>
-        </div>
+    <div className="space-y-8">
+      {/* Filters + privacy guardrail */}
+      <div className="flex flex-wrap items-center gap-3">
+        <span
+          className="inline-flex items-center gap-2 min-h-11 px-4 rounded-full bg-cc-green-soft text-black text-base font-medium"
+          title="Aggregate only. Groups with n < 5 are hidden."
+        >
+          <ShieldCheck className="w-5 h-5 text-cc-green shrink-0" aria-hidden />
+          n&nbsp;&lt;&nbsp;5 hidden
+        </span>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <select
-            value={stageFilter}
-            onChange={(e) => setStageFilter(e.target.value as PathwayStage | 'ALL')}
-            aria-label="Filter map by pathway stage"
-            className="bg-white border border-slate-300 rounded px-2.5 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-sky-600"
-          >
-            <option value="ALL">Care Stage: All Stages</option>
-            <option value="Referral">Referral</option>
-            <option value="Diagnostic Workup">Diagnostic Workup</option>
-            <option value="Treatment Initiation">Treatment Initiation</option>
-          </select>
+        <div className="flex flex-wrap items-center gap-3 sm:ml-auto w-full sm:w-auto">
+          <label className="relative inline-flex items-center flex-1 sm:flex-none min-w-0">
+            <Layers className="w-5 h-5 absolute left-4 pointer-events-none text-cc-muted" aria-hidden />
+            <select
+              value={stageFilter}
+              onChange={(e) => setStageFilter(e.target.value as PathwayStage | 'ALL')}
+              aria-label="Filter map by pathway stage"
+              className={`${selectClass} pl-11 w-full`}
+            >
+              <option value="ALL">All stages</option>
+              <option value="Referral">Referral</option>
+              <option value="Diagnostic Workup">Diagnostic Workup</option>
+              <option value="Treatment Initiation">Treatment Initiation</option>
+            </select>
+          </label>
 
-          <select
-            value={barrierFilter}
-            onChange={(e) => setBarrierFilter(e.target.value as BarrierCategory | 'ALL')}
-            aria-label="Filter map by barrier type"
-            className="bg-white border border-slate-300 rounded px-2.5 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-sky-600"
-          >
-            <option value="ALL">Barrier Type: All Combined</option>
-            {BARRIER_CATEGORIES.map((cat) => (
-              <option key={cat} value={cat}>
-                {cat}
-              </option>
-            ))}
-          </select>
+          <label className="relative inline-flex items-center flex-1 sm:flex-none min-w-0">
+            <AlertTriangle className="w-5 h-5 absolute left-4 pointer-events-none text-cc-red" aria-hidden />
+            <select
+              value={barrierFilter}
+              onChange={(e) => setBarrierFilter(e.target.value as BarrierCategory | 'ALL')}
+              aria-label="Filter map by barrier type"
+              className={`${selectClass} pl-11 w-full`}
+            >
+              <option value="ALL">All barriers</option>
+              {BARRIER_CATEGORIES.map((cat) => (
+                <option key={cat} value={cat}>
+                  {cat}
+                </option>
+              ))}
+            </select>
+          </label>
 
           {selectedRegion !== 'ALL' && (
             <button
               type="button"
               onClick={() => setSelectedRegion('ALL')}
-              className="px-2.5 py-1.5 rounded bg-slate-100 hover:bg-slate-200 text-xs text-slate-800 border border-slate-300 cursor-pointer"
+              className="inline-flex items-center gap-2 min-h-11 px-4 rounded-full bg-cc-surface hover:bg-cc-line text-base text-black cursor-pointer"
             >
-              Show All 3 Regions
+              <X className="w-5 h-5" aria-hidden />
+              All regions
             </button>
           )}
         </div>
       </div>
 
-      {/* Main Split: 2D Interactive SVG Map (Left) + Rate Cards & Suppressed Breakdown (Right) */}
-      <div className="grid grid-cols-1 lg:grid-cols-[46fr_54fr] gap-4 items-stretch">
-        {/* Realistic Daylight Nordic 2D Vector Map of Finland */}
-        <section className="bg-white border border-slate-200 rounded-lg overflow-hidden flex flex-col shadow-2xs">
-          <div className="px-4 py-2.5 border-b border-slate-200 bg-slate-50/70 flex items-center justify-between gap-2">
-            <div>
-              <h2 className="text-sm font-semibold text-slate-900">
-                Finland Barrier Rate Map (per 100 Contacted)
-              </h2>
-              <p className="text-[11px] text-slate-500">
-                Red = High barrier density (≥38/100) · Blue = Moderate (20–37/100) · Green = Low (&lt;20)
-              </p>
-            </div>
-          </div>
-
-          <div className="relative flex-1 bg-sky-100/70 p-2 flex flex-col items-center justify-center min-h-[470px]">
+      <div className="grid grid-cols-1 lg:grid-cols-[46fr_54fr] gap-8 items-start">
+        {/* Map */}
+        <section className="bg-white border border-cc-line rounded-[20px] overflow-hidden flex flex-col">
+          <div className="relative bg-white p-4 sm:p-6 flex flex-col items-center justify-center">
             <svg
               viewBox="0 0 430 530"
-              className="w-full max-h-[500px] h-auto select-none"
+              className="w-full max-w-[520px] h-auto select-none"
               role="img"
-              aria-label="2D Finland Regional Barrier Rate Map across 3 Focus Regions"
+              aria-label="Finland barrier rate map across 3 focus regions"
             >
               <defs>
-                <radialGradient id="tab2SeaGrad" cx="35%" cy="55%" r="75%">
-                  <stop offset="0%" stopColor="#dbeafe" />
-                  <stop offset="65%" stopColor="#bfdbfe" />
-                  <stop offset="100%" stopColor="#93c5fd" />
-                </radialGradient>
                 <clipPath id="tab2FinlandClip">
                   <polygon points={finlandOutlinePoints} />
                 </clipPath>
               </defs>
 
-              <rect x="0" y="0" width="430" height="530" fill="url(#tab2SeaGrad)" />
+              <rect x="0" y="0" width="430" height="530" rx="16" fill={CC.blueSoft} />
 
-              {/* Neighboring landmasses in soft cartographic slate */}
+              {/* Neighboring landmasses */}
               <polygon
                 points="0,0 135,0 112,72 128,150 100,260 64,340 42,460 0,530"
-                fill="#e2e8f0"
-                opacity="0.85"
+                fill={CC.surface}
               />
               <polygon
                 points="250,0 430,0 430,530 245,530 340,455 384,365 362,275 352,185 302,65"
-                fill="#e2e8f0"
-                opacity="0.85"
+                fill={CC.surface}
               />
 
-              {/* Sea Labels */}
-              <text
-                x="44"
-                y="335"
-                fill="#1e40af"
-                fontSize="9.5"
-                fontStyle="italic"
-                fontFamily="DM Sans, sans-serif"
-                transform="rotate(-74 44 335)"
-                opacity="0.6"
-              >
-                Gulf of Bothnia
-              </text>
-              <text
-                x="175"
-                y="518"
-                fill="#1e40af"
-                fontSize="9.5"
-                fontStyle="italic"
-                fontFamily="DM Sans, sans-serif"
-                opacity="0.6"
-              >
-                Gulf of Finland
-              </text>
-
-              {/* Neutral Non-Focus Regions (West/Mid Finland) */}
+              {/* Neutral non-focus regions */}
               <polygon
                 points={polygonPointsAttr(NEUTRAL_WEST_MID_XZ)}
-                fill="#dce8df"
-                stroke="#94a3b8"
+                fill="#ffffff"
+                stroke={CC.grey}
                 strokeWidth="1"
               />
 
-              {/* 3 Focus Regions */}
+              {/* 3 focus regions, filled by barrier rate */}
               {regionalAggregates.map((agg) => {
                 const isSelected = selectedRegion === agg.regionId;
                 const isDimmed = selectedRegion !== 'ALL' && !isSelected;
                 const intensityColor = agg.suppressed
-                  ? '#64748b'
+                  ? CC.grey
                   : getRateColor(agg.barrierRatePer100);
-                const naturalTerrain =
-                  agg.regionId === 'OYS_LAPLAND'
-                    ? '#e2ebe3'
-                    : agg.regionId === 'KYS_SAVO'
-                      ? '#d3e4d7'
-                      : '#cbe0d4';
 
                 return (
                   <g
@@ -291,53 +289,50 @@ export const Tab2RegionalBarrierMap: React.FC<Tab2RegionalBarrierMapProps> = ({
                       setSelectedRegion(isSelected ? 'ALL' : agg.regionId)
                     }
                     className="cursor-pointer transition-opacity duration-200"
-                    style={{ opacity: isDimmed ? 0.5 : 1 }}
+                    style={{ opacity: isDimmed ? 0.4 : 1 }}
                   >
                     <polygon
                       points={polygonPointsAttr(agg.meta.polygonXZ)}
-                      fill={naturalTerrain}
-                      stroke={isSelected ? '#0f172a' : intensityColor}
-                      strokeWidth={isSelected ? 2.4 : 1.6}
+                      fill="#ffffff"
+                      stroke={isSelected ? CC.ink : '#ffffff'}
+                      strokeWidth={isSelected ? 3 : 1.6}
                       strokeLinejoin="round"
                     />
-                    {/* Subtle barrier density wash */}
                     <polygon
                       points={polygonPointsAttr(agg.meta.polygonXZ)}
                       fill={intensityColor}
-                      opacity={agg.suppressed ? 0.08 : 0.2}
+                      opacity={agg.suppressed ? 0.5 : 0.55}
                     />
                   </g>
                 );
               })}
 
-              {/* Finnish Inland Lakes */}
-              <g clipPath="url(#tab2FinlandClip)" className="pointer-events-none">
+              {/* Inland lakes */}
+              <g clipPath="url(#tab2FinlandClip)" className="pointer-events-none" opacity="0.7">
                 {FINLAND_LAKES_XZ.map((lakePts, idx) => (
                   <polygon
                     key={`lake2-${idx}`}
                     points={polygonPointsAttr(lakePts)}
-                    fill="#93c5fd"
-                    stroke="#60a5fa"
-                    strokeWidth="0.9"
+                    fill={CC.blueSoft}
                   />
                 ))}
               </g>
 
-              {/* Outer Finland Border */}
+              {/* Outer border */}
               <polygon
                 points={finlandOutlinePoints}
                 fill="none"
-                stroke="#475569"
+                stroke={CC.ink}
                 strokeWidth="1.2"
                 className="pointer-events-none"
               />
 
-              {/* Regional Hospital Hubs + Aggregate Rate Cards (ZERO individual patient nodes) */}
+              {/* Hubs + aggregate labels (no individual patient nodes) */}
               {regionalAggregates.map((agg) => {
                 const [hx, hy] = toSvgPoint(agg.meta.hubXZ);
                 const [lx, ly] = toSvgPoint(agg.meta.labelAnchorXZ);
                 const isCallActiveHere = activeCallRegionId === agg.regionId;
-                const rateCol = agg.suppressed ? '#64748b' : getRateColor(agg.barrierRatePer100);
+                const rateCol = agg.suppressed ? CC.muted : getRateColor(agg.barrierRatePer100);
                 const isSelected = selectedRegion === agg.regionId;
 
                 return (
@@ -350,7 +345,7 @@ export const Tab2RegionalBarrierMap: React.FC<Tab2RegionalBarrierMapProps> = ({
                   >
                     {isCallActiveHere && (
                       <g transform={`translate(${hx}, ${hy})`} className="pointer-events-none">
-                        <circle r="8" fill="none" stroke="#0284c7" strokeWidth="2">
+                        <circle r="8" fill="none" stroke={CC.blue} strokeWidth="2.5">
                           <animate attributeName="r" from="6" to="30" dur="1.6s" repeatCount="indefinite" />
                           <animate attributeName="opacity" from="0.95" to="0" dur="1.6s" repeatCount="indefinite" />
                         </circle>
@@ -359,183 +354,212 @@ export const Tab2RegionalBarrierMap: React.FC<Tab2RegionalBarrierMapProps> = ({
 
                     {/* Hub beacon */}
                     <g transform={`translate(${hx}, ${hy})`}>
-                      <rect
-                        x="-6"
-                        y="-6"
-                        width="12"
-                        height="12"
-                        rx="2"
-                        transform="rotate(45)"
-                        fill="#0369a1"
-                        stroke="#ffffff"
-                        strokeWidth="1.6"
-                      />
+                      <circle r="8" fill={CC.ink} stroke="#ffffff" strokeWidth="2" />
                       <path
-                        d="M -2.5 0 H 2.5 M 0 -2.5 V 2.5"
+                        d="M -3.5 0 H 3.5 M 0 -3.5 V 3.5"
                         stroke="#ffffff"
-                        strokeWidth="1.5"
+                        strokeWidth="1.8"
                         strokeLinecap="round"
                       />
                     </g>
 
-                    {/* Crisp White Aggregate Rate Card on Map */}
-                    <g transform={`translate(${lx - 60}, ${ly - 22})`}>
+                    {/* Label card */}
+                    <g transform={`translate(${lx - 62}, ${ly - 26})`}>
                       <rect
                         x="0"
                         y="0"
-                        width="120"
-                        height="44"
-                        rx="5"
+                        width="124"
+                        height="52"
+                        rx="12"
                         fill="#ffffff"
-                        fillOpacity="0.96"
-                        stroke={isSelected ? '#0f172a' : rateCol}
-                        strokeWidth={isSelected ? 1.8 : 1.3}
+                        stroke={isSelected ? CC.ink : CC.line}
+                        strokeWidth={isSelected ? 2 : 1}
                       />
+                      <circle cx="14" cy="17" r="5" fill={rateCol} />
                       <text
-                        x="7"
-                        y="14"
-                        fill="#0f172a"
-                        fontSize="9.5"
-                        fontWeight="700"
-                        fontFamily="Plus Jakarta Sans, sans-serif"
+                        x="25"
+                        y="21.5"
+                        fill={CC.ink}
+                        fontSize="14"
+                        fontWeight="600"
+                        fontFamily="Inter, sans-serif"
                       >
-                        {agg.meta.shortLabel}
+                        {shortName(agg.meta.shortLabel)}
                       </text>
                       <text
-                        x="7"
-                        y="27"
-                        fill={rateCol}
-                        fontSize="10"
-                        fontWeight="700"
-                        fontFamily="JetBrains Mono, monospace"
+                        x="10"
+                        y="43"
+                        fill={CC.ink}
+                        fontSize="19"
+                        fontWeight="800"
+                        fontFamily="Inter, sans-serif"
                       >
-                        {agg.suppressed
-                          ? 'Suppressed (n < 5)'
-                          : `${agg.barrierRatePer100} / 100 contacted`}
-                      </text>
-                      <text
-                        x="7"
-                        y="38.5"
-                        fill="#475569"
-                        fontSize="8"
-                        fontFamily="JetBrains Mono, monospace"
-                      >
-                        {`n=${agg.contactedN} · Unans ${agg.unansweredRatePct}% · Delay ${agg.goal3DelayRiskPct}%`}
+                        {agg.suppressed ? 'n < 5' : agg.barrierRatePer100}
+                        {!agg.suppressed && (
+                          <tspan fontSize="12" fontWeight="500" fill={CC.muted}>
+                            {' '}/100
+                          </tspan>
+                        )}
                       </text>
                     </g>
                   </g>
                 );
               })}
             </svg>
+
+            {/* Legend */}
+            <div className="mt-5 flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-sm text-black">
+              {[
+                { c: CC.red, l: '≥ 38' },
+                { c: CC.yellow, l: '20–37' },
+                { c: CC.green, l: '< 20' },
+                { c: CC.grey, l: 'n < 5' },
+              ].map((x) => (
+                <span key={x.l} className="inline-flex items-center gap-2">
+                  <span className="w-4 h-4 rounded-full" style={{ backgroundColor: x.c }} />
+                  {x.l}
+                </span>
+              ))}
+              <span className="text-cc-muted">/100 contacted</span>
+            </div>
           </div>
         </section>
 
-        {/* Right: Regional Rate Cards & Privacy-Protected Category Breakdown */}
-        <div className="space-y-4">
+        {/* Region cards */}
+        <div className="space-y-8 min-w-0">
           {visibleRegions.map((agg) => {
-            const rateCol = agg.suppressed ? '#64748b' : getRateColor(agg.barrierRatePer100);
+            const rateCol = agg.suppressed ? CC.muted : getRateColor(agg.barrierRatePer100);
+            const kpis: Array<{ icon: LucideIcon; value: React.ReactNode; label: string; color: string }> = [
+              {
+                icon: AlertTriangle,
+                value: agg.suppressed ? <Lock className="w-8 h-8" aria-label="Suppressed (n < 5)" /> : agg.barrierRatePer100,
+                label: 'Barriers /100',
+                color: rateCol,
+              },
+              {
+                icon: Users,
+                value: (
+                  <>
+                    {agg.contactedN}
+                    <span className="text-lg font-medium text-cc-muted">/{agg.totalCohort}</span>
+                  </>
+                ),
+                label: 'Contacted',
+                color: CC.blue,
+              },
+              {
+                icon: PhoneMissed,
+                value: `${agg.unansweredRatePct}%`,
+                label: 'No answer',
+                color: CC.red,
+              },
+              {
+                icon: Clock,
+                value: `${agg.goal3DelayRiskPct}%`,
+                label: 'Timing alerts',
+                color: CC.yellow,
+              },
+            ];
+
             return (
               <section
                 key={agg.regionId}
-                className="bg-white border border-slate-200 rounded-lg p-4 space-y-3 shadow-2xs"
+                className="relative bg-white border border-cc-line rounded-[20px] p-5 sm:p-8 space-y-6"
               >
-                <div className="flex flex-wrap items-start justify-between gap-2">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h3 className="text-sm font-semibold text-slate-900">{agg.meta.name}</h3>
-                      <span className="text-[11px] text-slate-500">· {agg.meta.profileTag}</span>
-                    </div>
-                    <p className="text-xs text-slate-600 mt-0.5">{agg.meta.equityChallenge}</p>
+                <div className="flex flex-wrap items-center justify-between gap-4">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <span className="w-4 h-4 rounded-full shrink-0" style={{ backgroundColor: rateCol }} />
+                    <h3 className="text-xl sm:text-2xl font-bold tracking-[-0.02em] leading-tight text-black">
+                      {agg.meta.name}
+                    </h3>
+                    <details>
+                      <summary
+                        className="list-none [&::-webkit-details-marker]:hidden inline-flex items-center justify-center w-11 h-11 rounded-full hover:bg-cc-surface cursor-pointer text-cc-muted"
+                        aria-label="Region details"
+                        title="Region details"
+                      >
+                        <Info className="w-5 h-5" />
+                      </summary>
+                      <div className="absolute z-10 left-5 right-5 sm:left-auto sm:right-8 sm:w-[340px] mt-2 bg-white border border-cc-line rounded-[12px] p-4 shadow-lg text-base text-black leading-normal">
+                        <p className="font-semibold">{agg.meta.profileTag}</p>
+                        <p className="mt-2 text-cc-muted">{agg.meta.equityChallenge}</p>
+                      </div>
+                    </details>
                   </div>
 
                   <button
                     type="button"
                     onClick={() => onJumpToSimulator(agg.regionId)}
-                    className="px-2.5 py-1 rounded bg-sky-50 hover:bg-sky-100 border border-sky-200 text-sky-800 text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer"
+                    className="inline-flex items-center gap-2 min-h-11 px-5 rounded-full bg-cc-blue hover:bg-black text-white text-base font-semibold whitespace-nowrap shrink-0 cursor-pointer transition-colors"
                   >
-                    Simulate Intervention &rarr;
+                    <FlaskConical className="w-5 h-5" aria-hidden />
+                    Simulate
                   </button>
                 </div>
 
-                {/* Rates, Not Just Counts Grid */}
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-                  <div className="bg-slate-50 border border-slate-200 rounded px-3 py-2">
-                    <div className="text-[10px] text-slate-500">Barrier Rate / 100</div>
-                    {agg.suppressed ? (
-                      <div className="mt-1 flex items-center gap-1 text-[11px] font-medium text-amber-800">
-                        <Lock className="w-3 h-3 shrink-0" />
-                        Suppressed (&lt;5)
+                {/* KPI tiles */}
+                <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
+                  {kpis.map((k) => (
+                    <div key={k.label} className="bg-cc-surface rounded-[16px] p-4 min-w-0">
+                      <k.icon className="w-6 h-6" style={{ color: k.color }} aria-hidden />
+                      <div className="mt-2 text-[32px] sm:text-4xl font-extrabold tabular-nums leading-none text-black">
+                        {k.value}
                       </div>
-                    ) : (
-                      <div
-                        className="mt-0.5 text-lg font-bold font-mono tabular-nums"
-                        style={{ color: rateCol }}
-                      >
-                        {agg.barrierRatePer100}
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="bg-slate-50 border border-slate-200 rounded px-3 py-2">
-                    <div className="text-[10px] text-slate-500">Contacted Sample (n)</div>
-                    <div className="mt-0.5 text-lg font-bold font-mono tabular-nums text-slate-900">
-                      n={agg.contactedN}
-                      <span className="text-[11px] font-normal text-slate-500 ml-1">
-                        /{agg.totalCohort}
-                      </span>
+                      <div className="mt-2 text-sm text-cc-muted">{k.label}</div>
                     </div>
-                  </div>
-
-                  <div className="bg-slate-50 border border-slate-200 rounded px-3 py-2">
-                    <div className="text-[10px] text-slate-500">Unanswered Call Rate</div>
-                    <div className="mt-0.5 text-lg font-bold font-mono tabular-nums text-slate-900">
-                      {agg.unansweredRatePct}%
-                    </div>
-                  </div>
-
-                  <div className="bg-slate-50 border border-slate-200 rounded px-3 py-2">
-                    <div className="text-[10px] text-slate-500">Demo timing alerts</div>
-                    <div className="mt-0.5 text-lg font-bold font-mono tabular-nums text-orange-700">
-                      {agg.goal3DelayRiskPct}%
-                    </div>
-                  </div>
+                  ))}
                 </div>
 
-                {/* 6-Category Barrier Rates with k-anonymity small-group suppression */}
-                <div className="pt-2 border-t border-slate-200 space-y-1.5">
-                  <div className="text-[11px] font-medium text-slate-700">
-                    Barrier Breakdown per 100 Contacted (k-anonymity n &lt; 5 enforced)
-                  </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5">
-                    {agg.categoryBreakdown.map((item) => (
-                      <div key={item.category} className="text-[11px]">
-                        <div className="flex items-center justify-between gap-2 mb-0.5">
-                          <span className="text-slate-700">{item.category}</span>
-                          {item.suppressed ? (
-                            <span className="inline-flex items-center gap-1 text-[10px] text-slate-500 italic">
-                              <Lock className="w-2.5 h-2.5" />
-                              Suppressed (&lt;5 patients) to protect privacy
-                            </span>
-                          ) : (
-                            <span className="font-mono tabular-nums text-slate-800">
-                              {item.count === 0 ? '0.0' : `${item.ratePer100}`} / 100 (n={item.count})
-                            </span>
-                          )}
-                        </div>
-                        <div className="h-1.5 w-full bg-slate-100 rounded overflow-hidden border border-slate-200">
-                          {!item.suppressed && item.count > 0 && (
-                            <div
-                              className="h-full rounded transition-all duration-300"
-                              style={{
-                                width: `${Math.min(100, item.ratePer100 * 2)}%`,
-                                backgroundColor: getRateColor(item.ratePer100 * 1.4),
-                              }}
-                            />
-                          )}
+                {/* Barrier tiles with bars */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4">
+                  {agg.categoryBreakdown.map((item) => {
+                    const Icon = BARRIER_ICONS[item.category];
+                    const widthPct = item.suppressed || item.count === 0
+                      ? 0
+                      : Math.max(4, Math.min(100, item.ratePer100 * 2));
+                    const inside = widthPct >= 28;
+                    return (
+                      <div key={item.category} className="flex items-center gap-3 min-w-0">
+                        <span
+                          className="w-11 h-11 rounded-full bg-cc-red-soft text-cc-red grid place-items-center shrink-0"
+                          title={item.category}
+                        >
+                          <Icon className="w-5 h-5" aria-hidden />
+                        </span>
+                        <div className="flex-1 min-w-0">
+                          <div className="text-sm text-black mb-1">{item.category}</div>
+                          <div className="h-8 w-full bg-cc-surface rounded-full overflow-hidden flex items-center">
+                            {item.suppressed ? (
+                              <span className="inline-flex items-center gap-1.5 px-3 text-sm text-cc-muted">
+                                <Lock className="w-4 h-4" aria-hidden />
+                                n &lt; 5
+                              </span>
+                            ) : (
+                              <>
+                                {widthPct > 0 && (
+                                  <div
+                                    className="h-full rounded-full bg-cc-red flex items-center justify-end pr-3 transition-all duration-300"
+                                    style={{ width: `${widthPct}%` }}
+                                  >
+                                    {inside && (
+                                      <span className="text-sm font-bold text-white tabular-nums">
+                                        {item.ratePer100}
+                                      </span>
+                                    )}
+                                  </div>
+                                )}
+                                {!inside && (
+                                  <span className="px-3 text-sm font-bold text-black tabular-nums">
+                                    {item.count === 0 ? '0' : item.ratePer100}
+                                  </span>
+                                )}
+                              </>
+                            )}
+                          </div>
                         </div>
                       </div>
-                    ))}
-                  </div>
+                    );
+                  })}
                 </div>
               </section>
             );

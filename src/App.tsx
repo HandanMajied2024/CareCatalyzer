@@ -1,5 +1,5 @@
 import React, { useMemo, useRef, useState } from 'react';
-import { Activity } from 'lucide-react';
+import { Activity, AlertTriangle, ChevronDown, CircleCheck, Map as MapIcon, Users } from 'lucide-react';
 import { Tab1CallingAgent } from './components/Tab1CallingAgent.tsx';
 import { Tab2RegionalBarrierMap } from './components/Tab2RegionalBarrierMap.tsx';
 import { Tab3InterventionSimulator } from './components/Tab3InterventionSimulator.tsx';
@@ -224,12 +224,21 @@ export function App() {
       <header className="dashboard-header">
         <div className="dashboard-brand"><Activity aria-hidden="true" /><h1>CareCatalyzer</h1></div>
         <div className="dashboard-actions">
-          <span>{patients.length} demo patients · {pathwayAlertsCount} timing alerts</span>
-
+          <span className="dashboard-stat" title="Demo patients" aria-label={`${patients.length} demo patients`}>
+            <Users aria-hidden="true" />{patients.length}
+          </span>
+          <span className="dashboard-stat dashboard-stat-alert" title="Timing alerts" aria-label={`${pathwayAlertsCount} timing alerts`}>
+            <AlertTriangle aria-hidden="true" />{pathwayAlertsCount}
+          </span>
         </div>
       </header>
       <main className="dashboard-main">
-        {demoStepNotice && <p className="dashboard-notice" role="status">{demoStepNotice}</p>}
+        {demoStepNotice && (
+          <p className="dashboard-notice" role="status">
+            <CircleCheck aria-hidden="true" />
+            <span>{demoStepNotice}</span>
+          </p>
+        )}
         <section id="patients" ref={patientSection} tabIndex={-1} aria-label="Patient coordination" className="dashboard-section">
           <Tab1CallingAgent
             patients={patients}
@@ -246,7 +255,7 @@ export function App() {
           />
         </section>
         <section aria-labelledby="regional-heading" className="dashboard-section">
-          <h2 id="regional-heading">Regional summary</h2>
+          <h2 id="regional-heading">Regions</h2>
           <Tab2RegionalBarrierMap
             patients={patients}
             activeCallRegionId={activeCallRegionId}
@@ -254,7 +263,7 @@ export function App() {
           />
         </section>
         <details ref={planningSection} className="dashboard-planning">
-          <summary>Regional support plans</summary>
+          <summary><MapIcon aria-hidden="true" /><span>Support plans</span><ChevronDown aria-hidden="true" className="dashboard-planning-chevron" /></summary>
           <div className="dashboard-planning-body">
             <Tab3InterventionSimulator
               patients={patients}

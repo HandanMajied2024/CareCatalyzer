@@ -1,9 +1,20 @@
 @import "tailwindcss";
 
 @theme {
-  --font-display: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
-  --font-sans: "DM Sans", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  --font-display: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --color-cc-red: #e5262b;
+  --color-cc-blue: #1f5eff;
+  --color-cc-green: #14a44d;
+  --color-cc-yellow: #ffc400;
+  --color-cc-red-soft: #fdeaea;
+  --color-cc-blue-soft: #e8efff;
+  --color-cc-green-soft: #e6f6ec;
+  --color-cc-yellow-soft: #fff6d6;
+  --color-cc-line: #e6e6e6;
+  --color-cc-surface: #f5f5f5;
+  --color-cc-muted: #6b6b6b;
 }
 
 @layer base {
@@ -14,8 +25,9 @@
     min-height: 100%;
     margin: 0;
     padding: 0;
-    background-color: #f8fafc;
-    color: #0f172a;
+    background-color: #ffffff;
+    color: #0a0a0a;
+    font-size: 17px;
     font-family: var(--font-sans);
   }
 
@@ -29,14 +41,14 @@
   height: 6px;
 }
 .clinical-scroll::-webkit-scrollbar-track {
-  background: #f1f5f9;
+  background: var(--color-cc-surface);
 }
 .clinical-scroll::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
+  background: #d4d4d4;
   border-radius: 3px;
 }
 .clinical-scroll::-webkit-scrollbar-thumb:hover {
-  background: #94a3b8;
+  background: var(--color-cc-muted);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -49,26 +61,34 @@
 
 
 /* One shared dashboard: patient actions and their regional summary. */
-.care-dashboard { background: #fff; color: #111; }
-.dashboard-header { padding: 20px 24px; border-bottom: 1px solid #111; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 20px; }
+.care-dashboard { --gutter: clamp(20px, 5vw, 72px); background: #fff; color: #0a0a0a; overflow-x: clip; }
+.dashboard-header { max-width: 1440px; margin: 0 auto; padding: 28px var(--gutter); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; }
 .dashboard-brand, .dashboard-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
-.dashboard-brand > svg { color: #0057d9; width: 28px; height: 28px; }
-.dashboard-brand h1 { font-size: 26px; font-weight: 700; margin: 0; }
-.dashboard-actions { font-size: 16px; }
-.dashboard-actions button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-width: 44px; min-height: 44px; padding: 10px 16px; border: 1px solid #111; border-radius: 999px; background: white; color: #111; cursor: pointer; }
-.dashboard-actions button:hover { border-color: #0057d9; }
-.dashboard-main { max-width: 1600px; width: 100%; margin: auto; padding: 24px; display: grid; gap: 32px; }
+.dashboard-brand > svg { color: var(--color-cc-blue); width: 32px; height: 32px; }
+.dashboard-brand h1 { font-size: clamp(26px, 3vw, 34px); font-weight: 800; letter-spacing: -0.02em; line-height: 1.15; margin: 0; }
+.dashboard-stat { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 8px 18px; border-radius: 999px; background: var(--color-cc-surface); font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.dashboard-stat > svg { width: 20px; height: 20px; }
+.dashboard-stat-alert { background: var(--color-cc-red-soft); color: var(--color-cc-red); }
+.dashboard-actions button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-width: 44px; min-height: 44px; padding: 10px 16px; border: 1px solid #0a0a0a; border-radius: 999px; background: white; color: #0a0a0a; cursor: pointer; }
+.dashboard-actions button:hover { border-color: var(--color-cc-blue); }
+.dashboard-main { max-width: 1440px; width: 100%; margin: 0 auto; padding: 16px var(--gutter) 72px; display: grid; gap: clamp(40px, 5vw, 64px); box-sizing: border-box; }
 .dashboard-section { min-width: 0; scroll-margin-top: 16px; }
-.dashboard-section > h2 { font-size: 26px; font-weight: 700; margin-bottom: 16px; }
-.dashboard-planning { border: 1px solid #111; border-radius: 24px; min-width: 0; scroll-margin-top: 16px; }
-.dashboard-planning > summary { padding: 20px 24px; min-height: 48px; cursor: pointer; font-size: 20px; font-weight: 600; border-radius: 24px; }
-.dashboard-planning-body { padding: 0 20px 20px; }
-.dashboard-notice { padding: 16px 20px; border: 1px solid #0057d9; border-radius: 24px; }
-.care-dashboard :focus-visible { outline: 3px solid #0057d9; outline-offset: 3px; }
-.dashboard-skip { position: absolute; left: 16px; top: -100px; background: white; color: #111; padding: 12px 20px; border: 2px solid #0057d9; border-radius: 999px; z-index: 100; }
+.dashboard-section:focus { outline: none; }
+.dashboard-section > h2 { font-size: clamp(26px, 3vw, 32px); font-weight: 700; letter-spacing: -0.02em; line-height: 1.15; margin: 0 0 24px; }
+.dashboard-planning { border: 1px solid var(--color-cc-line); border-radius: 20px; min-width: 0; scroll-margin-top: 16px; }
+.dashboard-planning > summary { display: flex; align-items: center; gap: 12px; padding: 20px 24px; min-height: 56px; cursor: pointer; font-size: clamp(20px, 2.4vw, 26px); font-weight: 700; letter-spacing: -0.02em; border-radius: 20px; list-style: none; }
+.dashboard-planning > summary::-webkit-details-marker { display: none; }
+.dashboard-planning > summary > svg { width: 24px; height: 24px; color: var(--color-cc-blue); flex-shrink: 0; }
+.dashboard-planning > summary > .dashboard-planning-chevron { margin-left: auto; color: var(--color-cc-muted); transition: transform 0.2s; }
+.dashboard-planning[open] > summary > .dashboard-planning-chevron { transform: rotate(180deg); }
+.dashboard-planning-body { padding: 0 24px 24px; }
+.dashboard-notice { display: flex; align-items: flex-start; gap: 12px; margin: 0; padding: 16px 20px; background: var(--color-cc-green-soft); border-radius: 20px; font-size: 17px; line-height: 1.5; }
+.dashboard-notice > svg { width: 22px; height: 22px; color: var(--color-cc-green); flex-shrink: 0; margin-top: 2px; }
+.care-dashboard :focus-visible { outline: 3px solid var(--color-cc-blue); outline-offset: 3px; }
+.dashboard-skip { position: absolute; left: 16px; top: -100px; background: white; color: #0a0a0a; padding: 12px 20px; border: 2px solid var(--color-cc-blue); border-radius: 999px; z-index: 100; }
 .dashboard-skip:focus { top: 12px; }
 @media (max-width: 640px) {
-  .dashboard-header, .dashboard-main { padding: 16px; }
-  .dashboard-actions > span { width: 100%; }
+  .dashboard-header { padding-top: 20px; padding-bottom: 20px; }
+  .dashboard-planning > summary { padding: 16px 20px; }
   .dashboard-planning-body { padding: 0 12px 12px; }
 }

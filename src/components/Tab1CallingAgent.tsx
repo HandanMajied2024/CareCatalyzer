@@ -1,20 +1,48 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  AlertTriangle,
+  Accessibility,
+  ArrowRight,
+  BadgeCheck,
+  Bot,
+  Briefcase,
+  Bus,
+  CalendarClock,
+  CalendarX,
+  Check,
   CheckCircle2,
   ChevronDown,
+  CircleHelp,
   Clock,
+  Gauge,
+  HeartPulse,
+  Info,
+  Languages,
+  MapPin,
+  MessageCircle,
   Mic,
   MicOff,
+  Microscope,
   Phone,
   PhoneCall,
+  PhoneMissed,
   PhoneOff,
+  Route,
   Search,
   Send,
   ShieldAlert,
+  Snowflake,
   Sparkles,
+  Stethoscope,
+  Tag,
+  ThumbsUp,
+  TrendingDown,
+  TrendingUp,
   UserCheck,
+  UserRound,
+  Users,
+  Voicemail,
   Volume2,
+  type LucideIcon,
 } from 'lucide-react';
 import { FOCUS_REGIONS, FOCUS_REGION_ORDER } from '../data/patients.ts';
 import type {
@@ -27,7 +55,7 @@ import type {
   RiskTier,
   TranscriptLine,
 } from '../types/careconnect.ts';
-import { BARRIER_CATEGORIES, getTierMeta, RISK_TIERS } from '../utils/riskEngine.ts';
+import { BARRIER_CATEGORIES, RISK_TIERS } from '../utils/riskEngine.ts';
 import { float32ToPcm16Base64, voiceAudio } from '../utils/voiceAudio.ts';
 
 interface Tab1CallingAgentProps {
@@ -88,54 +116,54 @@ const SIMULATED_REPLIES: Array<{
 }> = [
   {
     id: 'confirm',
-    label: 'Confirm Attendance',
+    label: 'Confirm',
     tone: 'confirm',
     utterance: 'Yes, thank you. I will attend my scheduled lung pathway appointment.',
   },
   {
     id: 'vague',
-    label: 'Vague Refusal (Triggers Probing)',
+    label: 'Vague cancel',
     tone: 'probe',
     utterance: "I can't make it to the CT biopsy tomorrow, I need to cancel.",
   },
   {
     id: 'transport',
-    label: 'Transport Unavailable (>400 km)',
+    label: 'Transport',
     tone: 'barrier',
     utterance:
       'There is no bus or rural transport available from Inari to Oulu in time for the morning CT biopsy.',
   },
   {
     id: 'weather',
-    label: 'Severe Winter Weather',
+    label: 'Weather',
     tone: 'barrier',
     utterance:
       'A heavy winter snowstorm closed our side road and driving is unsafe right now.',
   },
   {
     id: 'scheduling',
-    label: 'Scheduling / Work Shift',
+    label: 'Work shift',
     tone: 'barrier',
     utterance:
       'My morning work shift supervisor will not release me unless we move it to afternoon.',
   },
   {
     id: 'accessibility',
-    label: 'Accessibility / Dyspnea (Nurse Alert)',
+    label: 'Breathless',
     tone: 'urgent',
     utterance:
       'I am short of breath, dizzy, and need a wheelchair escort—I cannot walk to the transit stop.',
   },
   {
     id: 'language',
-    label: 'Language / Prep Confusion',
+    label: 'Language',
     tone: 'barrier',
     utterance:
       'I did not understand the Finnish preparation instructions and need an interpreter.',
   },
   {
     id: 'no_answer',
-    label: 'No Answer / Voicemail',
+    label: 'No answer',
     tone: 'no_answer',
     utterance: '[NO_ANSWER_VOICEMAIL]',
   },
@@ -178,6 +206,143 @@ function speechRecognitionErrorMessage(error?: string): string {
   return 'Browser speech recognition stopped. Type your reply below or retry the microphone.';
 }
 
+type Tone = 'red' | 'blue' | 'green' | 'yellow' | 'neutral';
+
+const TONE_TEXT: Record<Tone, string> = {
+  red: 'text-cc-red',
+  blue: 'text-cc-blue',
+  green: 'text-cc-green',
+  yellow: 'text-black',
+  neutral: 'text-cc-muted',
+};
+
+const TONE_STROKE: Record<Tone, string> = {
+  red: 'var(--color-cc-red)',
+  blue: 'var(--color-cc-blue)',
+  green: 'var(--color-cc-green)',
+  yellow: 'var(--color-cc-yellow)',
+  neutral: 'var(--color-cc-muted)',
+};
+
+function tierTone(tier: RiskTier): Tone {
+  if (tier === 'Low') return 'green';
+  if (tier === 'Medium') return 'yellow';
+  return 'red';
+}
+
+const STATUS_META: Record<CallStatus, { label: string; icon: LucideIcon; chip: string }> = {
+  'Pending Call': { label: 'Pending', icon: Clock, chip: 'bg-cc-yellow-soft text-black' },
+  'Calling Live': { label: 'Calling', icon: PhoneCall, chip: 'bg-cc-blue text-white' },
+  'Confirmed Attending': { label: 'Confirmed', icon: CheckCircle2, chip: 'bg-cc-green-soft text-cc-green' },
+  'Appointment Cancelled': { label: 'Cancelled', icon: CalendarX, chip: 'bg-cc-red-soft text-cc-red' },
+  'Follow-Up Required (Human Callback Queued)': { label: 'Follow-up', icon: UserCheck, chip: 'bg-cc-yellow text-black' },
+  'No Pick-Up': { label: 'No answer', icon: PhoneMissed, chip: 'bg-cc-red-soft text-cc-red' },
+};
+
+const PATHWAY_STEPS: Array<{ stage: PathwayStage; label: string; icon: LucideIcon }> = [
+  { stage: 'Referral', label: 'Referral', icon: Send },
+  { stage: 'Diagnostic Workup', label: 'Diagnostics', icon: Microscope },
+  { stage: 'Treatment Initiation', label: 'Treatment', icon: Stethoscope },
+];
+
+const REPLY_TONE: Record<(typeof SIMULATED_REPLIES)[number]['tone'], string> = {
+  confirm: 'border-cc-green text-cc-green hover:bg-cc-green-soft',
+  probe: 'border-cc-yellow text-black hover:bg-cc-yellow-soft',
+  barrier: 'border-cc-blue text-cc-blue hover:bg-cc-blue-soft',
+  urgent: 'border-cc-red text-cc-red hover:bg-cc-red-soft',
+  no_answer: 'border-cc-line text-black hover:bg-cc-surface',
+};
+
+const REPLY_ICON: Record<string, LucideIcon> = {
+  confirm: ThumbsUp,
+  vague: CircleHelp,
+  transport: Bus,
+  weather: Snowflake,
+  scheduling: Briefcase,
+  accessibility: Accessibility,
+  language: Languages,
+  no_answer: Voicemail,
+};
+
+function RiskRing({ score, tier, size }: { score: number; tier: RiskTier; size: number }) {
+  const stroke = size >= 80 ? 8 : 5;
+  const r = (size - stroke) / 2;
+  const c = 2 * Math.PI * r;
+  const pct = Math.max(0, Math.min(100, score)) / 100;
+  return (
+    <span
+      className="relative inline-flex shrink-0 items-center justify-center"
+      style={{ width: size, height: size }}
+      role="img"
+      aria-label={`Risk ${score} of 100, ${tier}`}
+    >
+      <svg width={size} height={size} className="-rotate-90" aria-hidden="true">
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="var(--color-cc-line)" strokeWidth={stroke} />
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={r}
+          fill="none"
+          stroke={TONE_STROKE[tierTone(tier)]}
+          strokeWidth={stroke}
+          strokeLinecap="round"
+          strokeDasharray={`${c * pct} ${c}`}
+        />
+      </svg>
+      <span
+        className={`absolute font-bold tabular-nums ${size >= 80 ? 'text-3xl' : 'text-lg'}`}
+      >
+        {score}
+      </span>
+    </span>
+  );
+}
+
+function ScoreDelta({ delta }: { delta: number }) {
+  if (delta === 0) return null;
+  const up = delta > 0;
+  const Icon = up ? TrendingUp : TrendingDown;
+  return (
+    <span
+      className={`inline-flex shrink-0 items-center gap-0.5 text-sm font-semibold tabular-nums ${
+        up ? 'text-cc-red' : 'text-cc-green'
+      }`}
+      aria-label={`Score change ${up ? '+' : ''}${delta}`}
+    >
+      <Icon aria-hidden="true" className="h-4 w-4" />
+      {up ? `+${delta}` : delta}
+    </span>
+  );
+}
+
+function StatusChip({ status, large = false }: { status: CallStatus; large?: boolean }) {
+  const meta = STATUS_META[status];
+  const Icon = meta.icon;
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 rounded-full font-semibold ${meta.chip} ${
+        large ? 'px-4 py-2 text-base' : 'px-3 py-1 text-sm'
+      }`}
+      title={status}
+    >
+      <Icon aria-hidden="true" className={large ? 'h-5 w-5' : 'h-4 w-4'} />
+      {meta.label}
+    </span>
+  );
+}
+
+function InfoChip({ icon: Icon, label, title }: { icon: LucideIcon; label: string; title: string }) {
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 rounded-full bg-cc-surface px-3 py-1.5 text-base"
+      title={title}
+    >
+      <Icon aria-hidden="true" className="h-4 w-4 shrink-0 text-cc-muted" />
+      <span className="tabular-nums">{label}</span>
+    </span>
+  );
+}
+
 export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
   patients,
   selectedPatientId,
@@ -203,7 +368,7 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
     'idle'
   );
   const [statusNote, setStatusNote] = useState<string>(
-    'Select a Lung Cancer Fast-Track patient and initiate AI outreach.'
+    'Ready'
   );
   const [isAiSpeaking, setIsAiSpeaking] = useState(false);
   const [isProcessingTurn, setIsProcessingTurn] = useState(false);
@@ -940,17 +1105,25 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
     await evaluateTurnWithBackend(activePatientRef.current, trimmed);
   };
 
-  const tierMeta = getTierMeta(patient.riskTier);
   const regionMeta = FOCUS_REGIONS[patient.regionId];
   const waveActive = isLiveCalling || isAiSpeaking || micActive;
   const { riskBreakdown } = patient;
   const riskFactors = [
-    ['Care step and cancer stage', riskBreakdown.pathwayUrgencyPoints, patient.pathwayStage + ' and recorded cancer stage (' + patient.cancerStage + ').'],
-    ['Age and G8 screening', riskBreakdown.ageFrailtyPoints, 'Age ' + patient.age + ' and G8 score ' + patient.g8FrailtyScore + '/17. The model gives more points for older age bands and lower G8 scores.'],
-    ['Travel distance', riskBreakdown.distanceWeatherPoints, patient.distanceKm + ' km to the assigned care hub in this scenario. Points use distance bands.'],
-    ['Access support', riskBreakdown.equityLanguagePoints, 'Recorded language barrier, financial vulnerability, or accessibility need.'],
-    ['Missed calls and time remaining', riskBreakdown.historyMissedPoints, patient.priorMissedCalls + ' prior missed calls recorded. Points also increase when the booking is close to or past the target.'],
+    ['Stage', riskBreakdown.pathwayUrgencyPoints, 28, Microscope],
+    ['Age + G8', riskBreakdown.ageFrailtyPoints, 20, HeartPulse],
+    ['Distance', riskBreakdown.distanceWeatherPoints, 24, Route],
+    ['Access', riskBreakdown.equityLanguagePoints, 16, Languages],
+    ['Missed + time', riskBreakdown.historyMissedPoints, 12, PhoneMissed],
   ] as const;
+  const stageIndex = PATHWAY_STEPS.findIndex((s) => s.stage === patient.pathwayStage);
+  const voiceLabel =
+    voiceMode === 'gemini-live'
+      ? 'Live'
+      : voiceMode === 'web-speech'
+        ? 'Speech'
+        : voiceMode === 'guided'
+          ? 'Guided'
+          : 'Standby';
 
   function togglePatientDetails(patientId: string) {
     if (detailsOpen && patientId === patient.id) {
@@ -964,31 +1137,46 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
     }
   }
 
+  const selectClass =
+    'min-h-11 w-full min-w-0 rounded-full border border-cc-line bg-white px-4 text-base text-black focus:border-cc-blue focus:outline-none';
+
   return (
-    <div className={`grid grid-cols-1 gap-4 items-start ${detailsOpen ? 'lg:grid-cols-[44fr_56fr]' : ''}`}>
-      {/* Left: Filterable Lung Cancer Fast-Track Triage Queue */}
-      <section className={`min-w-0 bg-white border border-slate-200 rounded-lg flex flex-col overflow-hidden shadow-2xs ${detailsOpen ? 'max-h-[420px] lg:max-h-none lg:h-[700px]' : ''}`}>
-        <div className="px-4 py-3 border-b border-slate-200 bg-slate-50/70 space-y-2.5">
-          <div className="flex items-center justify-between gap-2">
-            <div>
-              <h2 className="text-sm font-semibold text-slate-900">
-                Lung Cancer Fast-Track Queue
-              </h2>
-              <p className="text-[11px] text-slate-500">
-                Showing {filteredQueue.length} of {patients.length} patients across 3 focus regions
-              </p>
-            </div>
+    <div
+      className={`grid grid-cols-1 items-start gap-6 lg:gap-8 ${
+        detailsOpen ? 'lg:grid-cols-[minmax(0,44fr)_minmax(0,56fr)]' : ''
+      }`}
+    >
+      {/* Left: patient queue */}
+      <section
+        className={`flex min-w-0 flex-col overflow-hidden rounded-[20px] border border-cc-line bg-white ${
+          detailsOpen ? 'max-h-[560px] lg:h-[880px] lg:max-h-none' : ''
+        }`}
+      >
+        <div className="space-y-4 border-b border-cc-line p-5 sm:p-6">
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="text-2xl font-bold tracking-tight sm:text-3xl">Patients</h2>
+            <span
+              className="inline-flex items-center gap-2 rounded-full bg-cc-surface px-3 py-1.5 text-base font-semibold tabular-nums"
+              aria-label={`Showing ${filteredQueue.length} of ${patients.length} patients`}
+            >
+              <Users aria-hidden="true" className="h-4 w-4" />
+              {filteredQueue.length}/{patients.length}
+            </span>
           </div>
 
-          <div className={`grid grid-cols-2 gap-1.5 ${detailsOpen ? '' : 'md:grid-cols-6'}`}>
+          <div className={`grid grid-cols-2 gap-2 ${detailsOpen ? '' : 'md:grid-cols-6'}`}>
             <div className="relative col-span-2">
-              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+              <Search
+                aria-hidden="true"
+                className="absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-cc-muted"
+              />
               <input
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search patient, municipality, or ID..."
-                className="w-full bg-white border border-slate-300 rounded pl-8 pr-2.5 py-1.5 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-sky-600"
+                placeholder="Search"
+                aria-label="Search patient, municipality, or ID"
+                className="min-h-11 w-full rounded-full border border-cc-line bg-white pl-12 pr-4 text-base text-black placeholder:text-cc-muted focus:border-cc-blue focus:outline-none"
               />
             </div>
 
@@ -996,9 +1184,9 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
               value={regionFilter}
               onChange={(e) => setRegionFilter(e.target.value as FocusRegionId | 'ALL')}
               aria-label="Filter queue by region"
-              className="bg-white border border-slate-300 rounded px-2 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-sky-600"
+              className={selectClass}
             >
-              <option value="ALL">All 3 Focus Regions</option>
+              <option value="ALL">All regions</option>
               {FOCUS_REGION_ORDER.map((id) => (
                 <option key={id} value={id}>
                   {FOCUS_REGIONS[id].shortLabel}
@@ -1010,21 +1198,21 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
               value={stageFilter}
               onChange={(e) => setStageFilter(e.target.value as PathwayStage | 'ALL')}
               aria-label="Filter queue by pathway stage"
-              className="bg-white border border-slate-300 rounded px-2 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-sky-600"
+              className={selectClass}
             >
-              <option value="ALL">Stage: All Pathway</option>
+              <option value="ALL">All stages</option>
               <option value="Referral">Referral</option>
-              <option value="Diagnostic Workup">Diagnostic Workup</option>
-              <option value="Treatment Initiation">Treatment Initiation</option>
+              <option value="Diagnostic Workup">Diagnostics</option>
+              <option value="Treatment Initiation">Treatment</option>
             </select>
 
             <select
               value={tierFilter}
               onChange={(e) => setTierFilter(e.target.value as RiskTier | 'ALL')}
               aria-label="Filter queue by risk tier"
-              className="bg-white border border-slate-300 rounded px-2 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-sky-600"
+              className={selectClass}
             >
-              <option value="ALL">Risk: All Tiers</option>
+              <option value="ALL">All risk</option>
               {RISK_TIERS.map((t) => (
                 <option key={t.tier} value={t.tier}>
                   {t.tier} ({t.min}–{t.max})
@@ -1036,23 +1224,26 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
               value={statusFilter}
               onChange={(e) => setStatusFilter(e.target.value as CallStatus | 'ALL')}
               aria-label="Filter queue by call status"
-              className="bg-white border border-slate-300 rounded px-2 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-sky-600"
+              className={selectClass}
             >
-              <option value="ALL">Status: All</option>
-              <option value="Pending Call">Pending Call</option>
-              <option value="Follow-Up Required (Human Callback Queued)">Follow-Up Required</option>
-              <option value="Confirmed Attending">Confirmed Attending</option>
-              <option value="Appointment Cancelled">Appointment Cancelled</option>
-              <option value="No Pick-Up">No Pick-Up</option>
+              <option value="ALL">All status</option>
+              <option value="Pending Call">Pending</option>
+              <option value="Follow-Up Required (Human Callback Queued)">Follow-up</option>
+              <option value="Confirmed Attending">Confirmed</option>
+              <option value="Appointment Cancelled">Cancelled</option>
+              <option value="No Pick-Up">No answer</option>
             </select>
           </div>
         </div>
 
-        <div className={`flex-1 min-h-0 divide-y divide-slate-200 ${detailsOpen ? 'overflow-y-auto clinical-scroll' : ''}`}>
+        <div
+          className={`min-h-0 flex-1 divide-y divide-cc-line ${
+            detailsOpen ? 'clinical-scroll overflow-y-auto' : ''
+          }`}
+        >
           {filteredQueue.map((p) => {
             const isExpanded = detailsOpen && p.id === patient.id;
             const isRecent = p.id === recentlyUpdatedId;
-            const tMeta = getTierMeta(p.riskTier);
 
             return (
               <button
@@ -1061,223 +1252,262 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
                 aria-expanded={isExpanded}
                 aria-controls="selected-patient-panel"
                 onClick={() => togglePatientDetails(p.id)}
-                className={`w-full text-left px-4 py-2.5 transition-colors cursor-pointer ${
-                  isRecent
-                    ? 'bg-sky-50'
-                    : isExpanded
-                      ? 'bg-sky-50/80 ring-1 ring-inset ring-sky-200'
-                      : 'hover:bg-slate-50'
+                className={`flex w-full cursor-pointer items-center gap-4 px-5 py-4 text-left transition-colors sm:px-6 ${
+                  isExpanded
+                    ? 'bg-cc-blue-soft shadow-[inset_4px_0_0_var(--color-cc-blue)]'
+                    : isRecent
+                      ? 'bg-cc-blue-soft'
+                      : 'hover:bg-cc-surface'
                 }`}
               >
-                <div className="flex items-start justify-between gap-2">
-                  <div className={`min-w-0 ${detailsOpen ? '' : 'flex-1 sm:grid sm:grid-cols-[1fr_1.3fr_1.5fr] sm:items-center sm:gap-3'}`}>
-                    <div className="flex min-w-0 items-center gap-1.5">
-                      <span className="text-xs font-semibold text-slate-900 truncate">
-                        {p.name}
-                      </span>
-                      <span className="text-[11px] font-mono text-slate-500">{p.age}y</span>
-                      {p.clinicalNurseAlert && (
-                        <AlertTriangle className="w-3.5 h-3.5 text-red-600 shrink-0" />
-                      )}
-                    </div>
-                    <div className="text-[11px] text-slate-600 truncate mt-0.5">
-                      {FOCUS_REGIONS[p.regionId].shortLabel} · {p.municipality} (
-                      <span className="font-mono tabular-nums">{p.distanceKm} km</span>)
-                    </div>
-                    <div className="text-[11px] text-slate-700 truncate mt-0.5">
-                      {p.pathwayStage} · {p.appointmentType}
-                    </div>
-                  </div>
+                <RiskRing score={p.riskScore} tier={p.riskTier} size={56} />
 
-                  <div className="flex shrink-0 items-center gap-2 text-right">
-                    <div>
-                      <div className="flex items-center justify-end gap-1 font-mono tabular-nums">
-                        <span className="text-sm font-bold text-slate-900">{p.riskScore}</span>
-                        {p.scoreDelta !== 0 && (
-                          <span
-                            className={`text-[11px] font-semibold ${
-                              p.scoreDelta > 0 ? 'text-red-600' : 'text-emerald-700'
-                            }`}
-                          >
-                            {p.scoreDelta > 0 ? `+${p.scoreDelta}` : p.scoreDelta}
-                          </span>
-                        )}
-                      </div>
-                      <span
-                        className={`inline-block mt-0.5 px-1.5 py-0.5 rounded border text-[10px] font-medium ${tMeta.badgeClasses}`}
-                      >
-                        {p.riskTier}
+                <div className="min-w-0 flex-1">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className="truncate text-lg font-semibold">{p.name}</span>
+                    <span className="shrink-0 text-base text-cc-muted tabular-nums">{p.age}</span>
+                    {p.clinicalNurseAlert && (
+                      <ShieldAlert
+                        aria-label="Nurse alert"
+                        className="h-5 w-5 shrink-0 text-cc-red"
+                      />
+                    )}
+                    <ScoreDelta delta={p.scoreDelta} />
+                  </div>
+                  <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-base text-cc-muted">
+                    <MapPin aria-hidden="true" className="h-4 w-4 shrink-0" />
+                    <span className="truncate">
+                      {p.municipality} · <span className="tabular-nums">{p.distanceKm} km</span>
+                    </span>
+                  </div>
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <StatusChip status={p.callStatus} />
+                    {p.verifiedBarrier && (
+                      <span className="inline-flex items-center gap-1.5 rounded-full bg-cc-surface px-3 py-1 text-sm font-medium">
+                        <Tag aria-hidden="true" className="h-3.5 w-3.5" />
+                        {p.verifiedBarrier}
                       </span>
-                    </div>
-                    <ChevronDown
-                      aria-hidden="true"
-                      className={`h-4 w-4 text-slate-500 ${isExpanded ? 'rotate-180' : ''}`}
-                    />
+                    )}
+                    {!detailsOpen && (
+                      <span className="hidden items-center gap-1.5 rounded-full bg-cc-surface px-3 py-1 text-sm font-medium sm:inline-flex">
+                        {(() => {
+                          const step = PATHWAY_STEPS.find((s) => s.stage === p.pathwayStage);
+                          const StepIcon = step?.icon ?? Microscope;
+                          return <StepIcon aria-hidden="true" className="h-3.5 w-3.5" />;
+                        })()}
+                        {p.appointmentType}
+                      </span>
+                    )}
                   </div>
                 </div>
 
-                <div className="mt-1.5 flex items-center justify-between gap-2 text-[10px]">
-                  <span
-                    className={
-                      p.callStatus === 'Confirmed Attending'
-                        ? 'text-emerald-700 font-semibold'
-                        : p.callStatus === 'Appointment Cancelled'
-                          ? 'text-red-700 font-semibold'
-                        : p.callStatus === 'Follow-Up Required (Human Callback Queued)'
-                          ? 'text-amber-700 font-semibold'
-                          : p.callStatus === 'No Pick-Up'
-                            ? 'text-red-700 font-semibold'
-                            : 'text-slate-500'
-                    }
-                  >
-                    {p.callStatus}
-                    {p.verifiedBarrier ? ` · [${p.verifiedBarrier}]` : ''}
-                  </span>
-                </div>
+                <ChevronDown
+                  aria-hidden="true"
+                  className={`h-5 w-5 shrink-0 text-cc-muted transition-transform ${
+                    isExpanded ? 'rotate-180' : ''
+                  }`}
+                />
               </button>
             );
           })}
         </div>
       </section>
 
-      {/* Right: Outbound AI Voice Console + Human-in-the-Loop Safeguards */}
+      {/* Right: selected patient + call console */}
       <section
         ref={detailsPanelRef}
         id="selected-patient-panel"
         aria-label="Selected patient details"
         hidden={!detailsOpen}
-        className={`min-w-0 scroll-mt-4 bg-white border border-slate-200 rounded-lg flex-col overflow-y-auto clinical-scroll h-[700px] shadow-2xs ${detailsOpen ? 'flex' : 'hidden'}`}
+        className={`clinical-scroll min-w-0 scroll-mt-4 flex-col overflow-hidden rounded-[20px] border border-cc-line bg-white lg:h-[880px] lg:overflow-y-auto ${
+          detailsOpen ? 'flex' : 'hidden'
+        }`}
       >
-        {/* Patient Clinical Header + Pathway Consequence */}
-        <div className="px-4 py-3 border-b border-slate-200 bg-slate-50/70">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <div className="flex items-center gap-2 flex-wrap">
-                <h2 className="text-base font-semibold text-slate-900">{patient.name}</h2>
-                <span className="text-xs font-mono tabular-nums text-slate-500">
-                  {patient.age}y · {patient.id}
-                </span>
+        {/* Patient header */}
+        <div className="space-y-6 p-5 sm:p-6 lg:p-8">
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0 space-y-3">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+                <h2 className="text-2xl font-bold leading-tight tracking-tight sm:text-4xl">
+                  {patient.name}
+                </h2>
+                <span className="text-xl text-cc-muted tabular-nums">{patient.age}</span>
+              </div>
+              <div className="flex flex-wrap gap-2">
                 {patient.clinicalNurseAlert && (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-red-50 text-red-800 border border-red-200">
-                    <ShieldAlert className="w-3 h-3" />
-                    Nurse Triage Alert
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-cc-red px-3 py-1.5 text-base font-semibold text-white">
+                    <ShieldAlert aria-hidden="true" className="h-4 w-4" />
+                    Nurse alert
                   </span>
                 )}
-              </div>
-
-              <p className="text-xs text-slate-600 mt-0.5">
-                {regionMeta.name} · {patient.municipality} (
-                <span className="font-mono tabular-nums text-sky-800 font-medium">
-                  {patient.distanceKm} km
-                </span>
-                ) · G8 Frailty{' '}
-                <span className="font-mono tabular-nums">{patient.g8FrailtyScore}/17</span> ·{' '}
-                {patient.primaryLanguage}
-              </p>
-
-              <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
-                <span className="text-slate-900 font-medium">
-                  Stage: {patient.pathwayStage}
-                </span>
-                <span aria-hidden="true" className="text-slate-400">·</span>
-                <span className="text-slate-700">{patient.appointmentType}</span>
+                <InfoChip icon={MapPin} label={patient.municipality} title={`${patient.municipality} · ${regionMeta.name}`} />
+                <InfoChip icon={Route} label={`${patient.distanceKm} km`} title="Distance to care hub" />
+                <InfoChip icon={HeartPulse} label={`G8 ${patient.g8FrailtyScore}/17`} title="G8 frailty score" />
+                <InfoChip icon={Languages} label={patient.primaryLanguage} title="Language" />
               </div>
             </div>
 
-            <div className="shrink-0 text-right">
-              <div className="flex items-center justify-end gap-1.5">
-                <span className="text-2xl font-bold font-mono tabular-nums text-slate-900">
-                  {patient.riskScore}
+            <div className="flex shrink-0 flex-col items-center gap-1.5">
+              <RiskRing score={patient.riskScore} tier={patient.riskTier} size={96} />
+              <div className="flex items-center gap-1.5">
+                <span className={`text-sm font-semibold ${TONE_TEXT[tierTone(patient.riskTier)]}`}>
+                  {patient.riskTier}
                 </span>
-                <span className="text-xs font-mono text-slate-400">/100</span>
-                {patient.scoreDelta !== 0 && (
+                <ScoreDelta delta={patient.scoreDelta} />
+              </div>
+            </div>
+          </div>
+
+          {/* Pathway stepper */}
+          <ol className="grid grid-cols-3" aria-label="Care pathway">
+            {PATHWAY_STEPS.map((step, i) => {
+              const done = i < stageIndex;
+              const current = i === stageIndex;
+              const StepIcon = done ? Check : step.icon;
+              return (
+                <li
+                  key={step.stage}
+                  className="relative flex flex-col items-center gap-1.5"
+                  aria-current={current ? 'step' : undefined}
+                >
+                  {i < PATHWAY_STEPS.length - 1 && (
+                    <span
+                      aria-hidden="true"
+                      className={`absolute left-[calc(50%+30px)] right-[calc(-50%+30px)] top-[20px] h-1 rounded-full ${
+                        done ? 'bg-cc-green' : 'bg-cc-line'
+                      }`}
+                    />
+                  )}
                   <span
-                    className={`text-xs font-mono tabular-nums font-semibold ${
-                      patient.scoreDelta > 0 ? 'text-red-600' : 'text-emerald-700'
+                    className={`flex h-11 w-11 items-center justify-center rounded-full ${
+                      done
+                        ? 'bg-cc-green text-white'
+                        : current
+                          ? 'bg-cc-blue text-white'
+                          : 'bg-cc-surface text-cc-muted'
                     }`}
                   >
-                    {patient.scoreDelta > 0 ? `+${patient.scoreDelta}` : patient.scoreDelta}
+                    <StepIcon aria-hidden="true" className="h-5 w-5" />
                   </span>
-                )}
+                  <span className={`text-sm ${current ? 'font-semibold text-black' : 'text-cc-muted'}`}>
+                    {step.label}
+                  </span>
+                </li>
+              );
+            })}
+          </ol>
+
+          {/* Timing tiles */}
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3" aria-label="Appointment timing">
+            {patient.callStatus === 'Appointment Cancelled' ? (
+              <div className="col-span-2 flex items-center gap-3 rounded-2xl bg-cc-red-soft p-4 text-lg font-semibold text-cc-red">
+                <CalendarX aria-hidden="true" className="h-6 w-6" /> Cancelled
               </div>
-              <span
-                className={`inline-block mt-0.5 px-2 py-0.5 rounded border text-[11px] font-medium ${tierMeta.badgeClasses}`}
-              >
-                {patient.riskTier}
-              </span>
+            ) : (
+              <>
+                <div className="rounded-2xl bg-cc-surface p-4">
+                  <div className="text-3xl font-bold tabular-nums">{patient.daysElapsed}</div>
+                  <div className="text-sm text-cc-muted">days elapsed</div>
+                </div>
+                <div
+                  className={`rounded-2xl p-4 ${
+                    patient.daysUntilAppointment < 0 ? 'bg-cc-red-soft' : 'bg-cc-blue-soft'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 text-3xl font-bold tabular-nums">
+                    <Clock aria-hidden="true" className="h-6 w-6" />
+                    {patient.daysUntilAppointment === 0
+                      ? 'Today'
+                      : Math.abs(patient.daysUntilAppointment)}
+                  </div>
+                  <div className="text-sm text-cc-muted">
+                    {patient.daysUntilAppointment === 0
+                      ? 'appointment'
+                      : patient.daysUntilAppointment > 0
+                        ? 'days to appt.'
+                        : 'days overdue'}
+                  </div>
+                </div>
+              </>
+            )}
+            <div className="col-span-2 flex items-center gap-3 rounded-2xl border border-cc-line p-4 sm:col-span-1">
+              <CalendarClock aria-hidden="true" className="h-6 w-6 shrink-0 text-cc-blue" />
+              <span className="min-w-0 text-base font-medium">{patient.appointmentType}</span>
             </div>
           </div>
 
-          <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-2 border-t border-slate-200 pt-3 text-base text-black" aria-label="Appointment timing">
-            {patient.callStatus === 'Appointment Cancelled' ? (
-              <span className="inline-flex items-center gap-2 font-semibold text-red-700">
-                <PhoneOff aria-hidden="true" className="h-4 w-4" /> Appointment cancelled
-              </span>
-            ) : (
-              <>
-                <span><strong>{patient.daysElapsed}</strong> days elapsed</span>
-                <span className="inline-flex items-center gap-2"><Clock aria-hidden="true" className="h-4 w-4" />
-                  {patient.daysUntilAppointment === 0 ? 'Appointment today' : patient.daysUntilAppointment > 0
-                    ? <><strong>{patient.daysUntilAppointment}</strong> days until appointment</>
-                    : <><strong>{Math.abs(patient.daysUntilAppointment)}</strong> days since appointment</>}
-                </span>
-              </>
-            )}
-          </div>
-
-          <details className="mt-2 rounded-md border border-slate-200 bg-white text-xs text-slate-700">
-            <summary className="cursor-pointer px-2.5 py-1.5 font-semibold text-sky-800">
-              How the outreach score is calculated
+          {/* Score breakdown */}
+          <details className="group rounded-2xl border border-cc-line">
+            <summary className="flex min-h-12 cursor-pointer list-none items-center gap-2 px-4 text-base font-semibold">
+              <Gauge aria-hidden="true" className="h-5 w-5 text-cc-blue" />
+              Score
+              <ChevronDown
+                aria-hidden="true"
+                className="ml-auto h-5 w-5 text-cc-muted transition-transform group-open:rotate-180"
+              />
             </summary>
-            <div className="max-h-56 overflow-y-auto border-t border-slate-200 px-2.5 py-2">
-              <p>
-                The demo score ranks patients for coordinator follow-up. Baseline {patient.baselineScore}
-                {patient.scoreDelta === 0
-                  ? ' with no call outcome adjustment.'
-                  : ' ' + (patient.scoreDelta > 0 ? '+ ' : '− ') + Math.abs(patient.scoreDelta) + ' after the call outcome = ' + patient.riskScore + '/100.'}
+            <div className="space-y-3 border-t border-cc-line p-4">
+              <p className="text-base tabular-nums text-cc-muted">
+                {patient.baselineScore}
+                {patient.scoreDelta !== 0 &&
+                  ` ${patient.scoreDelta > 0 ? '+' : '−'} ${Math.abs(patient.scoreDelta)}`}{' '}
+                = <strong className="text-black">{patient.riskScore}</strong>/100
               </p>
-              <dl className="mt-2 space-y-2">
-                {riskFactors.map(([label, points, explanation]) => (
-                  <div key={label}>
-                    <dt className="font-semibold text-slate-900">{label} · {points} points</dt>
-                    <dd>{explanation}</dd>
+              {riskFactors.map(([label, points, max, Icon]) => (
+                <div key={label} className="flex items-center gap-3">
+                  <Icon aria-hidden="true" className="h-5 w-5 shrink-0 text-cc-muted" />
+                  <span className="w-28 shrink-0 text-sm font-medium sm:w-32">{label}</span>
+                  <div
+                    className="relative h-7 flex-1 overflow-hidden rounded-full bg-cc-surface"
+                    role="img"
+                    aria-label={`${label}: ${points} of ${max} points`}
+                  >
+                    <div
+                      className="flex h-full items-center justify-end rounded-full bg-cc-red pr-2.5 text-sm font-semibold text-white tabular-nums"
+                      style={{ width: `${Math.max(14, Math.round((points / max) * 100))}%` }}
+                    >
+                      {points}
+                    </div>
                   </div>
-                ))}
-              </dl>
+                </div>
+              ))}
             </div>
           </details>
         </div>
 
-        {/* Call Controls & Waveform */}
-        <div className="px-4 py-2.5 border-b border-slate-200 bg-white space-y-2">
+        {/* Call controls */}
+        <div className="space-y-4 border-t border-cc-line p-5 sm:p-6 lg:px-8">
           <div className="flex flex-wrap items-center gap-2">
             {!isLiveCalling ? (
               <>
                 <button
                   type="button"
                   onClick={handleStartLiveMicCall}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-sky-700 hover:bg-sky-800 text-white font-semibold text-xs transition-colors cursor-pointer"
+                  aria-label="Start a microphone conversation"
+                  className="inline-flex min-h-12 cursor-pointer items-center gap-2 rounded-full bg-cc-blue px-5 text-base font-semibold text-white transition-opacity hover:opacity-90"
                 >
-                  <Mic className="w-3.5 h-3.5" />
-                  Try a microphone conversation
+                  <Mic aria-hidden="true" className="h-5 w-5" />
+                  Live call
                 </button>
                 <button
                   type="button"
                   onClick={handleStartGuidedCall}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 font-medium text-xs transition-colors cursor-pointer"
+                  aria-label="Start a guided simulation"
+                  className="inline-flex min-h-12 cursor-pointer items-center gap-2 rounded-full border border-black bg-white px-5 text-base font-semibold transition-colors hover:bg-cc-surface"
                 >
-                  <Phone className="w-3.5 h-3.5 text-sky-700" />
-                  Start a guided simulation
+                  <Phone aria-hidden="true" className="h-5 w-5" />
+                  Simulate
                 </button>
               </>
             ) : (
               <button
                 type="button"
                 onClick={handleHangUpAndClassify}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-red-600 hover:bg-red-700 text-white font-semibold text-xs transition-colors cursor-pointer"
+                aria-label="End session and review outcome"
+                className="inline-flex min-h-12 cursor-pointer items-center gap-2 rounded-full bg-cc-red px-5 text-base font-semibold text-white transition-opacity hover:opacity-90"
               >
-                <PhoneOff className="w-3.5 h-3.5" />
-                End session and review outcome
+                <PhoneOff aria-hidden="true" className="h-5 w-5" />
+                End call
               </button>
             )}
 
@@ -1285,96 +1515,91 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
               type="button"
               onClick={() => onRequestHumanCoordinator(patient.id)}
               disabled={patient.humanCoordinatorRequested}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border text-xs font-medium transition-colors cursor-pointer ${
+              aria-label={
                 patient.humanCoordinatorRequested
-                  ? 'bg-amber-50 border-amber-300 text-amber-900 font-semibold'
-                  : 'bg-white hover:bg-slate-50 border-slate-300 text-slate-700'
+                  ? 'Coordinator follow-up requested'
+                  : 'Request coordinator follow-up'
+              }
+              title={
+                patient.humanCoordinatorRequested
+                  ? 'Coordinator follow-up requested'
+                  : 'Request coordinator follow-up'
+              }
+              className={`inline-flex min-h-12 cursor-pointer items-center gap-2 rounded-full px-5 text-base font-semibold transition-colors ${
+                patient.humanCoordinatorRequested
+                  ? 'bg-cc-yellow-soft text-black'
+                  : 'border border-cc-line bg-white hover:bg-cc-surface'
               }`}
             >
-              <PhoneCall className="w-3.5 h-3.5 text-amber-600" />
-              {patient.humanCoordinatorRequested
-                ? 'Coordinator follow-up requested'
-                : 'Request coordinator follow-up'}
+              {patient.humanCoordinatorRequested ? (
+                <Check aria-hidden="true" className="h-5 w-5" />
+              ) : (
+                <UserCheck aria-hidden="true" className="h-5 w-5" />
+              )}
+              Coordinator
             </button>
 
-            <div className="ml-auto flex items-center gap-1.5 text-[11px] font-mono text-slate-500">
-              {micActive ? <Mic className="w-3.5 h-3.5 text-emerald-600" /> : <MicOff className="w-3.5 h-3.5" />}
-              <span>
-                {voiceMode === 'gemini-live'
-                  ? 'Gemini Live'
-                  : voiceMode === 'web-speech'
-                    ? 'WebSpeech'
-                    : voiceMode === 'guided'
-                      ? 'Guided AI'
-                      : 'Standby'}
-              </span>
-            </div>
+            <span
+              className="ml-auto inline-flex items-center gap-1.5 rounded-full bg-cc-surface px-3 py-1.5 text-sm font-medium"
+              title="Voice mode"
+            >
+              {micActive ? (
+                <Mic aria-hidden="true" className="h-4 w-4 text-cc-green" />
+              ) : (
+                <MicOff aria-hidden="true" className="h-4 w-4 text-cc-muted" />
+              )}
+              {voiceLabel}
+            </span>
           </div>
 
-          <p className="text-[11px] leading-relaxed text-slate-600">
-            Use your microphone to play the patient, or choose a sample reply in the guided simulation.
-            A follow-up request is recorded in this demo workspace for a human coordinator.
-          </p>
-
-          <div role="status" className="flex items-center gap-3 px-2.5 py-1.5 rounded bg-slate-50 border border-slate-200">
+          <div
+            role="status"
+            className="flex items-center gap-3 rounded-2xl bg-cc-surface px-4 py-3"
+          >
             <Volume2
-              className={`w-4 h-4 shrink-0 ${
-                isAiSpeaking ? 'text-sky-700' : waveActive ? 'text-emerald-600' : 'text-slate-400'
+              aria-hidden="true"
+              className={`h-5 w-5 shrink-0 ${
+                isAiSpeaking ? 'text-cc-blue' : waveActive ? 'text-cc-green' : 'text-cc-muted'
               }`}
             />
-            <div className="flex items-end gap-0.5 h-4 shrink-0" aria-hidden="true">
+            <div className="flex h-6 shrink-0 items-end gap-0.5" aria-hidden="true">
               {[0.4, 0.85, 0.55, 1, 0.65, 0.9, 0.45, 0.75, 0.5, 0.85].map((h, i) => (
                 <span
                   key={i}
-                  className={`w-1 rounded-xs transition-all duration-200 ${
-                    isAiSpeaking
-                      ? 'bg-sky-600'
-                      : waveActive
-                        ? 'bg-emerald-600'
-                        : 'bg-slate-300'
+                  className={`w-1 rounded-full transition-all duration-200 ${
+                    isAiSpeaking ? 'bg-cc-blue' : waveActive ? 'bg-cc-green' : 'bg-cc-line'
                   }`}
                   style={{
                     height: waveActive
-                      ? `${Math.round((isAiSpeaking ? h : h * 0.65) * 16)}px`
-                      : '3px',
+                      ? `${Math.round((isAiSpeaking ? h : h * 0.65) * 24)}px`
+                      : '4px',
                   }}
                 />
               ))}
             </div>
-            <p className="text-xs text-slate-700 truncate">
-              {isProcessingTurn ? 'Evaluating spoken justification & pathway risk...' : statusNote}
+            <p className="min-w-0 text-base">
+              {isProcessingTurn ? 'Evaluating…' : statusNote}
             </p>
           </div>
         </div>
 
-        {/* Human-in-the-Loop Safeguard & Barrier Verification Panel */}
-        <div className="mx-4 mt-2.5 px-3 py-2.5 rounded-md border border-slate-200 bg-slate-50/80 space-y-2">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-center gap-2 text-xs">
-              {patient.callStatus === 'Confirmed Attending' ? (
-                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-              ) : patient.callStatus === 'Appointment Cancelled' ? (
-                <PhoneOff className="w-4 h-4 text-red-600 shrink-0" />
-              ) : patient.callStatus === 'Follow-Up Required (Human Callback Queued)' ? (
-                <UserCheck className="w-4 h-4 text-amber-600 shrink-0" />
-              ) : (
-                <Clock className="w-4 h-4 text-slate-500 shrink-0" />
-              )}
-              <span className="font-semibold text-slate-900">Status: {patient.callStatus}</span>
+        {/* Outcome + human override */}
+        <div className="mx-5 space-y-4 rounded-2xl border border-cc-line p-4 sm:mx-6 sm:p-5 lg:mx-8">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <StatusChip status={patient.callStatus} large />
               {patient.overriddenByHuman && (
-                <span className="text-[11px] font-mono text-sky-700 font-semibold">
-                  · Human Verified
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-cc-blue-soft px-3 py-1.5 text-sm font-semibold text-cc-blue">
+                  <BadgeCheck aria-hidden="true" className="h-4 w-4" />
+                  Verified
                 </span>
               )}
             </div>
 
-            {/* Patient / Coordinator Classification Override Dropdown */}
-            <div className="flex items-center gap-1.5">
-              <label
-                htmlFor="barrier-override"
-                className="text-[11px] text-slate-600 whitespace-nowrap"
-              >
-                Classification Override:
+            <div className="flex min-w-0 items-center gap-2">
+              <label htmlFor="barrier-override" className="inline-flex items-center gap-1.5 text-sm font-medium text-cc-muted">
+                <Tag aria-hidden="true" className="h-4 w-4" />
+                Barrier
               </label>
               <select
                 id="barrier-override"
@@ -1383,10 +1608,10 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
                   const val = e.target.value as BarrierCategory;
                   if (val) onOverrideBarrier(patient.id, val);
                 }}
-                className="bg-white border border-slate-300 rounded px-2 py-1 text-xs text-slate-900 focus:outline-none focus:border-sky-600"
+                className="min-h-11 rounded-full border border-cc-line bg-white px-4 text-base focus:border-cc-blue focus:outline-none"
               >
                 <option value="" disabled>
-                  Select / Override Barrier...
+                  Set
                 </option>
                 {BARRIER_CATEGORIES.map((cat) => (
                   <option key={cat} value={cat}>
@@ -1398,113 +1623,125 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
           </div>
 
           {(patient.barrierSummary || patient.recommendedAction || patient.deployedOperationAction) && (
-            <div className="text-[11px] space-y-0.5 pt-1.5 border-t border-slate-200">
+            <ul className="space-y-3 border-t border-cc-line pt-4 text-base">
               {patient.barrierSummary && (
-                <p className="text-slate-700">
-                  <strong className="text-slate-900">Reason:</strong> {patient.barrierSummary}
-                </p>
+                <li className="flex gap-3">
+                  <MessageCircle aria-label="Reason" className="mt-0.5 h-5 w-5 shrink-0 text-cc-muted" />
+                  <span>{patient.barrierSummary}</span>
+                </li>
               )}
               {patient.recommendedAction && (
-                <p className="text-sky-800">
-                  <strong>{patient.callStatus === 'Appointment Cancelled' ? 'Next step:' : 'Safeguard Action:'}</strong>{' '}
-                  {patient.recommendedAction}
-                </p>
+                <li className="flex gap-3">
+                  <ArrowRight aria-label="Next step" className="mt-0.5 h-5 w-5 shrink-0 text-cc-blue" />
+                  <span>{patient.recommendedAction}</span>
+                </li>
               )}
               {patient.deployedOperationAction && (
-                <p className="text-emerald-800 font-medium">
-                  <strong>Deployed Simulator Action:</strong> {patient.deployedOperationAction}
-                </p>
+                <li className="flex gap-3">
+                  <CheckCircle2 aria-label="Deployed action" className="mt-0.5 h-5 w-5 shrink-0 text-cc-green" />
+                  <span>{patient.deployedOperationAction}</span>
+                </li>
               )}
-            </div>
+            </ul>
           )}
         </div>
 
-        {/* Live Transcript */}
-        <div className="flex-1 min-h-32 overflow-y-auto clinical-scroll px-4 py-2.5 space-y-2 bg-white">
+        {/* Transcript */}
+        <div className="clinical-scroll max-h-[480px] min-h-40 flex-1 space-y-3 overflow-y-auto px-5 py-5 sm:px-6 lg:max-h-none lg:px-8">
           {patient.transcript.length === 0 ? (
-            <div className="h-full flex flex-col items-center justify-center text-center px-4 py-4 border border-dashed border-slate-300 rounded-md bg-slate-50/50">
-              <Sparkles className="w-5 h-5 text-sky-700 mb-1.5" />
-              <p className="text-xs font-medium text-slate-800">
-                Ready for Lung Fast-Track Outreach: {patient.name}
-              </p>
-              <p className="text-[11px] text-slate-500 mt-1 max-w-md">
-                Try a microphone conversation or click a "Simulate Patient Voice Reply" scenario below.
-                An explicit cancellation request triggers one reason question before the demo appointment is cancelled.
-              </p>
+            <div className="flex h-full min-h-32 flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-cc-line p-6 text-center">
+              <Sparkles aria-hidden="true" className="h-7 w-7 text-cc-blue" />
+              <p className="text-lg font-semibold">Ready to call</p>
             </div>
           ) : (
-            patient.transcript.map((line) => (
-              <div
-                key={line.id}
-                className={`rounded-md px-3 py-2 text-xs border ${
-                  line.speaker === 'AI Coordinator'
-                    ? line.probing
-                      ? 'bg-amber-50 border-amber-300 text-amber-950'
-                      : 'bg-slate-50 border-slate-200 text-slate-800'
-                    : line.speaker === 'Patient'
-                      ? 'bg-sky-50 border-sky-200 text-slate-900 ml-4'
-                      : 'bg-slate-100 border-slate-200 text-slate-700 italic'
-                }`}
-              >
-                <div className="flex items-center justify-between gap-2 mb-0.5">
-                  <span className="font-semibold text-[11px] text-slate-700">
-                    {line.speaker}
-                    {line.probing ? ' · Probing Barrier' : ''}
-                  </span>
-                  <span className="text-[10px] font-mono text-slate-500">{line.timestamp}</span>
+            patient.transcript.map((line) => {
+              if (line.speaker === 'System') {
+                return (
+                  <div
+                    key={line.id}
+                    className="flex items-start gap-2 rounded-2xl border border-dashed border-cc-line px-4 py-3 text-sm text-cc-muted"
+                  >
+                    <Info aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0" />
+                    <p className="min-w-0 flex-1 leading-relaxed">{line.text}</p>
+                    <span className="shrink-0 tabular-nums">{line.timestamp}</span>
+                  </div>
+                );
+              }
+              const isAi = line.speaker === 'AI Coordinator';
+              return (
+                <div key={line.id} className={`flex ${isAi ? 'justify-start pr-6 sm:pr-12' : 'justify-end pl-6 sm:pl-12'}`}>
+                  <div
+                    className={`max-w-full rounded-2xl px-4 py-3 ${
+                      isAi
+                        ? line.probing
+                          ? 'bg-cc-yellow-soft'
+                          : 'bg-cc-surface'
+                        : 'bg-cc-blue-soft'
+                    }`}
+                  >
+                    <div className="mb-1 flex items-center gap-2 text-sm text-cc-muted">
+                      {isAi ? (
+                        <Bot aria-label="AI coordinator" className="h-4 w-4 text-cc-blue" />
+                      ) : (
+                        <UserRound aria-label="Patient" className="h-4 w-4" />
+                      )}
+                      {line.probing && (
+                        <span className="inline-flex items-center gap-1 font-semibold text-black">
+                          <CircleHelp aria-hidden="true" className="h-4 w-4" />
+                          Probing
+                        </span>
+                      )}
+                      <span className="ml-auto tabular-nums">{line.timestamp}</span>
+                    </div>
+                    <p className="text-base leading-relaxed">{line.text}</p>
+                  </div>
                 </div>
-                <p className="leading-relaxed">{line.text}</p>
-              </div>
-            ))
+              );
+            })
           )}
           <div ref={transcriptEndRef} />
         </div>
 
-        {/* Simulated Patient Voice Replies & Manual Input */}
-        <div className="px-4 py-2.5 border-t border-slate-200 bg-slate-50/80 space-y-2">
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+        {/* Simulated replies + manual input */}
+        <div className="space-y-3 border-t border-cc-line p-5 sm:p-6 lg:px-8">
+          <div className="grid grid-cols-2 gap-2 md:grid-cols-4 lg:grid-cols-2 2xl:grid-cols-4">
             {SIMULATED_REPLIES.map((sim) => {
-              const btnStyle =
-                sim.tone === 'confirm'
-                  ? 'border-emerald-300 hover:bg-emerald-50 text-emerald-900'
-                  : sim.tone === 'probe'
-                    ? 'border-amber-300 hover:bg-amber-50 text-amber-900'
-                    : sim.tone === 'urgent'
-                      ? 'border-red-300 hover:bg-red-50 text-red-900'
-                      : sim.tone === 'no_answer'
-                        ? 'border-slate-300 hover:bg-slate-100 text-slate-700'
-                        : 'border-sky-200 hover:bg-sky-50 text-sky-900';
-
+              const tone = REPLY_TONE[sim.tone];
+              const Icon = REPLY_ICON[sim.id] ?? MessageCircle;
               return (
                 <button
                   key={sim.id}
                   type="button"
                   disabled={isProcessingTurn}
                   onClick={() => void handleSimulatedReply(sim.utterance)}
-                  className={`text-left px-2 py-1.5 rounded border bg-white text-[11px] font-medium transition-colors truncate cursor-pointer disabled:opacity-50 ${btnStyle}`}
+                  className={`inline-flex min-h-12 min-w-0 cursor-pointer items-center gap-2 rounded-2xl border px-3 py-1.5 text-left text-base font-medium leading-tight transition-colors disabled:opacity-50 sm:px-4 ${tone}`}
                   title={sim.utterance}
+                  aria-label={`Simulate reply: ${sim.label}`}
                 >
-                  {sim.label}
+                  <Icon aria-hidden="true" className="h-5 w-5 shrink-0" />
+                  <span className="min-w-0">{sim.label}</span>
                 </button>
               );
             })}
           </div>
 
-          <form onSubmit={handleManualSubmit} className="flex items-center gap-1.5">
+          <form onSubmit={handleManualSubmit} className="flex items-center gap-2">
             <input
               type="text"
               value={manualInput}
               onChange={(e) => setManualInput(e.target.value)}
-              placeholder="Or type patient's spoken response..."
-              className="flex-1 bg-white border border-slate-300 rounded px-2.5 py-1.5 text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-sky-600"
+              placeholder="Type reply"
+              aria-label="Type the patient's spoken response"
+              className="min-h-12 min-w-0 flex-1 rounded-full border border-cc-line bg-white px-5 text-base placeholder:text-cc-muted focus:border-cc-blue focus:outline-none"
             />
             <button
               type="submit"
               disabled={isProcessingTurn || !manualInput.trim()}
-              className="inline-flex items-center gap-1 px-3 py-1.5 rounded bg-sky-700 hover:bg-sky-800 text-white text-xs font-medium cursor-pointer disabled:opacity-40"
+              aria-label="Send"
+              title="Send"
+              className="inline-flex h-12 w-12 shrink-0 cursor-pointer items-center justify-center rounded-full bg-cc-blue text-white transition-opacity hover:opacity-90 disabled:opacity-40"
             >
-              <Send className="w-3.5 h-3.5" />
-              Send
+              <Send aria-hidden="true" className="h-5 w-5" />
             </button>
           </form>
         </div>
