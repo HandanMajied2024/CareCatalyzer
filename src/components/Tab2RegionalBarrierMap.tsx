@@ -3,7 +3,6 @@ import { ArrowRight, Phone, AlertCircle } from 'lucide-react';
 import { FOCUS_REGIONS, FOCUS_REGION_ORDER, REGION_MAP_PATHS, REGION_MAP_LABELS } from '../data/regions.ts';
 import { getRegionalSummaries, getAttentionRegions, getRegionCategory, REGION_CATEGORY_RULES, type RegionCategory } from '../utils/regionalSummary.ts';
 import { BARRIER_CATEGORIES } from '../utils/riskEngine.ts';
-import { summarizeCancellationReasons } from '../utils/cancellationReasons.ts';
 import type { FocusRegionId, PatientRecord } from '../types/careconnect.ts';
 
 export function Tab2RegionalBarrierMap({ patients, activeCallRegionId, onJumpToSimulator }: {
@@ -17,7 +16,6 @@ export function Tab2RegionalBarrierMap({ patients, activeCallRegionId, onJumpToS
   const selected = summaries.find(region => region.regionId === selectedRegion)!;
   const records = patients.filter(p => p.regionId === selectedRegion);
   const barrierRecords = records.filter(p => p.verifiedBarrier && p.callStatus !== 'Confirmed Attending');
-  const cancellations = summarizeCancellationReasons(records);
   return <div className="regions-layout">
     <div className="region-map-card">
       <div className="region-map-heading"><h3>Finland · 19 regions</h3><span>{patients.length} patients</span></div>
@@ -68,23 +66,13 @@ export function Tab2RegionalBarrierMap({ patients, activeCallRegionId, onJumpToS
           <div><strong>{selected.veryHigh}</strong><span>Very risky</span></div>
           <div><strong>{selected.high}</strong><span>Risky</span></div>
         </div>
-        <section className="cancellation-reasons" aria-label="Regional cancellation reasons">
-          <h4>Why appointments were cancelled</h4>
-          <p>{cancellations.total} cancelled appointments</p>
-          {cancellations.total === 0 ? <p>No cancellations recorded in this region.</p> : <>
-            {cancellations.mostCommon.length > 0 && <p className="cancellation-leading"><strong>Most common:</strong> {cancellations.mostCommon.map(group => group.label).join(' · ')}{cancellations.mostCommon.length > 1 ? ' (tied)' : ''}</p>}
-            <div className="cancellation-reason-list">{cancellations.groups.map(group => <div key={group.category} className="cancellation-reason-row">
-              <div><span>{group.label}</span><strong>{group.count} <small>({group.percent}%)</small></strong></div>
-              <meter min={0} max={cancellations.total} value={group.count} aria-label={group.label + ': ' + group.count + ' of ' + cancellations.total + ' cancellations'} />
-            </div>)}</div>
-          </>}
-        </section>
-        <details className="recorded-barriers"><summary>Other attendance barriers</summary>
+        <section className="recorded-barriers" aria-label="Attendance barriers">
+        <h4>Attendance barriers</h4>
         <div className="region-barriers">{BARRIER_CATEGORIES.map(barrier => {
-          const count = barrierRecords.filter(p => p.callStatus !== 'Appointment Cancelled' && p.verifiedBarrier === barrier).length;
+          const count = barrierRecords.filter(p => p.verifiedBarrier === barrier).length;
           return <div key={barrier}><span>{barrier}</span><meter min={0} max={Math.max(1, selected.total)} value={count} aria-label={barrier} /><strong>{count}</strong></div>;
         })}</div>
-        </details>
+        </section>
         <button type="button" className="region-support-button" onClick={() => onJumpToSimulator(selectedRegion)}>Plan regional support <ArrowRight size={20} aria-hidden="true" /></button>
       </div>
       <div className="region-ranking">
