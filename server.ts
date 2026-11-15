@@ -11,6 +11,7 @@ import {
   GoogleGenAI,
   Modality,
   StartSensitivity,
+  ThinkingLevel,
   Type,
 } from '@google/genai';
 import type {
@@ -24,6 +25,23 @@ const __dirname = path.dirname(__filename);
 const PORT = Number(process.env.PORT || 3000);
 const GEMINI_CHAT_MODEL = process.env.GEMINI_CHAT_MODEL?.trim() || 'gemini-3.8-flash';
 const GEMINI_LIVE_MODEL = process.env.GEMINI_LIVE_MODEL?.trim() || 'gemini-3.8-live';
+// If the primary chat model is overloaded (503) or slow, try these in order.
+const GEMINI_CHAT_FALLBACK_MODELS = (process.env.GEMINI_CHAT_FALLBACK_MODELS ?? 'gemini-3-flash-preview,gemini-3.5-flash')
+  .split(',').map((m) => m.trim()).filter(Boolean);
+const GEMINI_TURN_TIMEOUT_MS = Number(process.env.GEMINI_TURN_TIMEOUT_MS || 10000);
+const GEMINI_LIVE_VOICE = process.env.GEMINI_LIVE_VOICE?.trim() || 'Charon'; // male prebuilt voice
+const GEMINI_TTS_MODEL = process.env.GEMINI_TTS_MODEL?.trim() || 'gemini-2.5-flash-preview-tts';
+const ELEVENLABS_MODEL = process.env.ELEVENLABS_MODEL?.trim() || 'eleven_flash_v2_5';
+const TTS_VOICES = {
+  male: {
+    eleven: process.env.ELEVENLABS_VOICE_ID_MALE?.trim() || 'pNInz6obpgDQGcFmaJgB', // Adam
+    gemini: process.env.GEMINI_TTS_VOICE_MALE?.trim() || 'Charon',
+  },
+  female: {
+    eleven: process.env.ELEVENLABS_VOICE_ID_FEMALE?.trim() || '21m00Tcm4TlvDq8ikWAM', // Rachel
+    gemini: process.env.GEMINI_TTS_VOICE_FEMALE?.trim() || 'Kore',
+  },
+} as const;
 const GEMINI_SETUP_MESSAGE = 'Add GEMINI_API_KEY to the project .env file and restart the server.';
 
 interface PatientContextPayload {
@@ -103,7 +121,7 @@ const CALL_TURN_SCHEMA = {
 };
 
 const COORDINATOR_SYSTEM_PROMPT =
-  'You are an empathetic AI Oncology Care Coordinator for FICAN calling a patient on the Lung Cancer Fast-Track Pathway. ' +
+  'You are the Care Pathway Agent, an empathetic AI oncology care coordinator for the CareCatalyst care team, calling a patient on the Lung Cancer Fast-Track Pathway. ' +
   'Mandatory Safeguards & Rules:\n' +
   '0. LANGUAGE: Conduct the entire conversation in clear, simple English. Never switch to Finnish because of the patient record. Only change language if the patient explicitly asks. Ask one short question at a time, then wait for the patient to answer.\n' +
   '1. CANCELLATION WORKFLOW: When the patient explicitly asks to cancel, you MUST ask exactly once why before cancelling. On that first request, do not cancel; set outcome="cancellation_reason_requested", needsProbe=true, and ask one short reason question. If the patient already stated a reason in the same request, still ask once to confirm that reason.\n' +
@@ -173,6 +191,15 @@ async function runGeminiCallTurn(
       : '';
 
   const callModel = async (modelName: string) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), GEMINI_TURN_TIMEOUT_MS);
+    try {
+      return await callModelOnce(modelName, controller.signal);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  const callModelOnce = async (modelName: string, abortSignal: AbortSignal) => {
     return ai.models.generateContent({
       model: modelName,
       contents: `Evaluate this Lung Cancer Fast-Track outreach call turn and return structured JSON:\n\n${payload}${instructionSuffix}`,
@@ -180,13 +207,28 @@ async function runGeminiCallTurn(
         systemInstruction: COORDINATOR_SYSTEM_PROMPT,
         responseMimeType: 'application/json',
         responseSchema: CALL_TURN_SCHEMA,
+        // Low latency for a phone-like turn; override with GEMINI_THINKING_LEVEL if needed.
+        thinkingConfig: { thinkingLevel: (process.env.GEMINI_THINKING_LEVEL?.trim() || 'LOW') as ThinkingLevel },
+        abortSignal,
       },
     });
   };
 
-  const modelUsed = GEMINI_CHAT_MODEL;
+  let modelUsed = GEMINI_CHAT_MODEL;
   try {
-    const response = await callModel(modelUsed);
+    let response: Awaited<ReturnType<typeof callModel>> | null = null;
+    let lastError: unknown = null;
+    for (const candidate of [GEMINI_CHAT_MODEL, ...GEMINI_CHAT_FALLBACK_MODELS.filter((m) => m !== GEMINI_CHAT_MODEL)]) {
+      try {
+        response = await callModel(candidate);
+        modelUsed = candidate;
+        break;
+      } catch (err) {
+        lastError = err;
+        console.warn(`Gemini model ${candidate} failed (${err instanceof Error ? err.message.slice(0, 120) : 'error'}); trying next.`);
+      }
+    }
+    if (!response) throw lastError ?? new Error('No Gemini model responded.');
 
     const parsed = JSON.parse((response.text ?? '{}').trim()) as Partial<CallTurnApiResponse>;
     if (!parsed || typeof parsed.aiReply !== 'string' || !parsed.aiReply.trim()) {
@@ -220,9 +262,27 @@ async function runGeminiCallTurn(
       modelUsed,
     };
   } catch (err) {
-    console.warn('Gemini call-turn failed. Check API access, quota, and GEMINI_CHAT_MODEL.');
+    console.warn('Gemini call-turn failed. Check API access, quota, and GEMINI_CHAT_MODEL.', err instanceof Error ? err.message.slice(0, 300) : '');
     throw new Error('Gemini could not respond. Check the API key, model access and quota, then try again.');
   }
+}
+
+function pcm16ToWav(pcm: Buffer, sampleRate: number): Buffer {
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0);
+  header.writeUInt32LE(36 + pcm.length, 4);
+  header.write('WAVE', 8);
+  header.write('fmt ', 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * 2, 28);
+  header.writeUInt16LE(2, 32);
+  header.writeUInt16LE(16, 34);
+  header.write('data', 36);
+  header.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([header, pcm]);
 }
 
 async function startServer() {
@@ -232,7 +292,8 @@ async function startServer() {
   app.get('/api/health', (_req, res) => {
     res.json({
       ok: true,
-      service: 'fican-careconnect-lung-pathway',
+      service: 'carecatalyst-care-pathway-agent',
+      ttsProvider: process.env.ELEVENLABS_API_KEY?.trim() ? 'elevenlabs' : process.env.GEMINI_API_KEY?.trim() ? 'gemini' : 'browser',
       geminiConfigured: Boolean(process.env.GEMINI_API_KEY?.trim()),
       chatModel: GEMINI_CHAT_MODEL,
       liveModel: GEMINI_LIVE_MODEL,
@@ -300,6 +361,63 @@ async function startServer() {
       const message = err instanceof Error ? err.message : 'Classification failed.';
       res.status(502).json({ error: message });
     }
+  });
+
+  // Text-to-speech for the turn-based call (Plan B) and the personal agent.
+  // ElevenLabs first, then Gemini TTS; the client falls back to browser speech on any error.
+  app.post('/api/tts', async (req, res) => {
+    const body = req.body as { text?: string; voice?: string };
+    const text = typeof body.text === 'string' ? body.text.trim().slice(0, 1200) : '';
+    if (!text) {
+      res.status(400).json({ error: 'text is required.' });
+      return;
+    }
+    const voice = body.voice === 'female' ? TTS_VOICES.female : TTS_VOICES.male;
+    const elevenKey = process.env.ELEVENLABS_API_KEY?.trim();
+    if (elevenKey) {
+      try {
+        const r = await fetch(
+          `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voice.eleven)}?output_format=mp3_44100_128`,
+          {
+            method: 'POST',
+            headers: { 'xi-api-key': elevenKey, 'Content-Type': 'application/json', Accept: 'audio/mpeg' },
+            body: JSON.stringify({ text, model_id: ELEVENLABS_MODEL }),
+            signal: AbortSignal.timeout(10000),
+          }
+        );
+        if (!r.ok) throw new Error(`ElevenLabs HTTP ${r.status}`);
+        const audio = Buffer.from(await r.arrayBuffer());
+        res.set({ 'Content-Type': 'audio/mpeg', 'X-TTS-Provider': 'elevenlabs', 'Cache-Control': 'no-store' });
+        res.send(audio);
+        return;
+      } catch (err) {
+        console.warn('ElevenLabs TTS failed, trying Gemini TTS:', err instanceof Error ? err.message : err);
+      }
+    }
+    if (process.env.GEMINI_API_KEY?.trim()) {
+      try {
+        const ai = getGeminiClient();
+        const response = await ai.models.generateContent({
+          model: GEMINI_TTS_MODEL,
+          contents: [{ parts: [{ text }] }],
+          config: {
+            responseModalities: [Modality.AUDIO],
+            speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice.gemini } } },
+          },
+        });
+        const part = response.candidates?.[0]?.content?.parts?.find((p) => p.inlineData?.data);
+        const data = part?.inlineData?.data;
+        if (!data) throw new Error('Gemini TTS returned no audio.');
+        const pcm = Buffer.from(data, 'base64');
+        const rateMatch = /rate=(\d+)/.exec(part?.inlineData?.mimeType ?? '');
+        res.set({ 'Content-Type': 'audio/wav', 'X-TTS-Provider': 'gemini', 'Cache-Control': 'no-store' });
+        res.send(pcm16ToWav(pcm, rateMatch ? Number(rateMatch[1]) : 24000));
+        return;
+      } catch (err) {
+        console.warn('Gemini TTS failed:', err instanceof Error ? err.message : err);
+      }
+    }
+    res.status(503).json({ error: 'No server TTS available; use browser speech.' });
   });
 
   if (process.env.NODE_ENV !== 'production') {
@@ -382,7 +500,7 @@ async function startServer() {
                 speechConfig: {
                   languageCode: 'en-US',
                   voiceConfig: {
-                    prebuiltVoiceConfig: { voiceName: 'Charon' },
+                    prebuiltVoiceConfig: { voiceName: GEMINI_LIVE_VOICE },
                   },
                 },
                 inputAudioTranscription: {
@@ -439,7 +557,7 @@ async function startServer() {
                   console.warn('Gemini Live session error. Check model access, network and quota.');
                   safeSend({
                     type: 'fallback',
-                    reason: 'Live voice stream interrupted; switching to structured fallback.',
+                    reason: 'Live voice stream interrupted; switching to turn-based Gemini call (Plan B).',
                   });
                 },
                 onclose: () => {
@@ -462,7 +580,7 @@ async function startServer() {
             console.warn('Failed to open Gemini Live. Check API access, quota, and GEMINI_LIVE_MODEL.');
             safeSend({
               type: 'fallback',
-              reason: 'Gemini Live unavailable; using browser speech recognition with Gemini chat.',
+              reason: 'Gemini Live unavailable; switching to turn-based Gemini call (Plan B).',
             });
           }
           return;
@@ -506,7 +624,7 @@ async function startServer() {
   });
 
   httpServer.listen(PORT, '0.0.0.0', () => {
-    console.log(`FICAN CareConnect Lung Pathway server listening on http://0.0.0.0:${PORT}`);
+    console.log(`CareCatalyst Care Pathway Agent server listening on http://0.0.0.0:${PORT}`);
   });
 }
 

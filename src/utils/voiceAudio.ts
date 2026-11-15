@@ -85,25 +85,90 @@ class VoiceAudioController {
     });
   }
 
-  public speakText(text: string): void {
-    if (this.muted || typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+  public speakText(text: string, voice: 'male' | 'female' = 'male'): Promise<void> {
+    if (this.muted || typeof window === 'undefined' || !('speechSynthesis' in window)) return Promise.resolve();
+    return new Promise((resolve) => {
+      try {
+        window.speechSynthesis.cancel();
+        const utter = new SpeechSynthesisUtterance(text);
+        utter.rate = 1.0;
+        utter.pitch = voice === 'male' ? 0.9 : 1.05;
+        const voices = window.speechSynthesis.getVoices().filter((v) => /^en/i.test(v.lang));
+        const malePattern = /(male|david|daniel|mark|george|james|guy|ryan|christopher|eric|thomas|arthur|fred|alex|google uk english male)/i;
+        const femalePattern = /(female|zira|samantha|susan|hazel|jenny|aria|libby|sonia|karen|victoria|google uk english female)/i;
+        const preferred =
+          voice === 'male'
+            ? voices.find((v) => malePattern.test(v.name) && !femalePattern.test(v.name)) ?? voices.find((v) => !femalePattern.test(v.name))
+            : voices.find((v) => femalePattern.test(v.name)) ?? voices[0];
+        if (preferred) utter.voice = preferred;
+        const timer = window.setTimeout(resolve, Math.max(4000, text.length * 90));
+        utter.onend = () => { window.clearTimeout(timer); resolve(); };
+        utter.onerror = () => { window.clearTimeout(timer); resolve(); };
+        window.speechSynthesis.speak(utter);
+      } catch {
+        resolve();
+      }
+    });
+  }
+
+  private agentAudio: HTMLAudioElement | null = null;
+  private agentAudioUrl: string | null = null;
+  private agentResolve: (() => void) | null = null;
+
+  /**
+   * Speaks an agent line with server TTS (/api/tts: ElevenLabs, then Gemini TTS).
+   * Falls back to browser speechSynthesis. Resolves when playback ends.
+   */
+  public async speakAgent(text: string, voice: 'male' | 'female' = 'male'): Promise<'server' | 'browser' | 'muted'> {
+    if (this.muted || typeof window === 'undefined') return 'muted';
+    this.stopAgentAudio();
     try {
-      window.speechSynthesis.cancel();
-      const utter = new SpeechSynthesisUtterance(text);
-      utter.rate = 1.02;
-      utter.pitch = 1.02;
-      const voices = window.speechSynthesis.getVoices();
-      const preferred =
-        voices.find((v) => /en-GB|en-US/i.test(v.lang) && /natural|google|samantha|daniel|zira/i.test(v.name)) ??
-        voices.find((v) => /en/i.test(v.lang));
-      if (preferred) utter.voice = preferred;
-      window.speechSynthesis.speak(utter);
+      const resp = await fetch('/api/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, voice }),
+        signal: AbortSignal.timeout(12000),
+      });
+      if (!resp.ok) throw new Error('tts ' + resp.status);
+      const blob = await resp.blob();
+      if (!blob.size) throw new Error('empty tts');
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      this.agentAudio = audio;
+      this.agentAudioUrl = url;
+      await new Promise<void>((resolve) => {
+        this.agentResolve = resolve;
+        audio.onended = () => resolve();
+        audio.onerror = () => resolve();
+        audio.play().catch(() => resolve());
+      });
+      this.stopAgentAudio();
+      return 'server';
     } catch {
-      // Ignore speech synthesis errors in restricted environments
+      this.stopAgentAudio();
+      await this.speakText(text, voice);
+      return 'browser';
+    }
+  }
+
+  public stopAgentAudio(): void {
+    if (this.agentAudio) {
+      try { this.agentAudio.pause(); } catch { /* noop */ }
+      this.agentAudio = null;
+    }
+    if (this.agentAudioUrl) {
+      URL.revokeObjectURL(this.agentAudioUrl);
+      this.agentAudioUrl = null;
+    }
+    if (this.agentResolve) {
+      const r = this.agentResolve;
+      this.agentResolve = null;
+      r();
     }
   }
 
   public stopSpeech(): void {
+    this.stopAgentAudio();
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       try {
         window.speechSynthesis.cancel();
