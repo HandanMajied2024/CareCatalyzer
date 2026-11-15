@@ -1,5 +1,5 @@
 import React, { useMemo, useRef, useState } from 'react';
-import { Activity, UsersRound, MapPinned, HandHeart, FlaskConical } from 'lucide-react';
+import { Activity, UsersRound, MapPinned, HandHeart, FlaskConical, Building2 } from 'lucide-react';
 import { finishPatientCall } from './utils/callLifecycle.ts';
 import { getAttentionRegions, getRegionalSummaries } from './utils/regionalSummary.ts';
 import { getEligiblePatients } from './utils/simulationEngine.ts';
@@ -195,7 +195,7 @@ export function App() {
     <div className="care-dashboard min-h-screen">
       <a className="dashboard-skip" href="#patients" onClick={showPatients}>Skip to patients</a>
       <header className="dashboard-header">
-        <div className="dashboard-brand"><Activity aria-hidden="true" /><h1>CareCatalyst</h1></div>
+        <div className="dashboard-brand"><Activity aria-hidden="true" /><h1>CareCatalyst</h1><span className="part-badge" title="Part 1 · CareCatalyst for welfare counties"><Building2 aria-hidden="true" />For counties</span></div>
         <div className="dashboard-actions">
           <span className="synthetic-badge" title="All patients are synthetic. Regional statistics are public, aggregated data."><FlaskConical aria-hidden="true" />Synthetic patients · demo data</span>
           <span className="dashboard-stat" title="Synthetic patients in queue"><UsersRound aria-hidden="true" />{patients.length}</span>
