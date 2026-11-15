@@ -809,6 +809,7 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
       voiceAudio.playDialTone();
     }
     speechInputOkRef.current = true;
+    setCallMode('turn'); // keep the mode toggle in sync after a Live fallback
     setVoiceMode('web-speech');
     setStatusNote(reason ? `Plan B · ${reason}` : 'Turn-based call connected.');
     if (!liveTranscriptRef.current.some((line) => line.speaker === 'AI Coordinator')) {
@@ -865,13 +866,33 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
         if (!navigator.mediaDevices?.getUserMedia) {
           throw new DOMException('getUserMedia is unavailable', 'NotSupportedError');
         }
-        micStream = await navigator.mediaDevices.getUserMedia({
+        // A pending permission prompt can hang forever: give up after 8 s.
+        let micTimer: number | undefined;
+        let micTimedOut = false;
+        const micRequest = navigator.mediaDevices.getUserMedia({
           audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
         });
+        try {
+          micStream = await Promise.race([
+            micRequest,
+            new Promise<never>((_, reject) => {
+              micTimer = window.setTimeout(() => {
+                micTimedOut = true;
+                reject(new DOMException('Microphone request timed out', 'TimeoutError'));
+              }, 8000);
+            }),
+          ]);
+        } finally {
+          window.clearTimeout(micTimer);
+        }
+        if (micTimedOut) throw new DOMException('Microphone request timed out', 'TimeoutError');
         micStreamRef.current = micStream;
+        // A stream granted after the timeout is released right away.
+        void micRequest.then((late) => { if (late !== micStreamRef.current) late.getTracks().forEach((t) => t.stop()); }, () => {});
       } catch (error) {
         // Plan B: no microphone for Live -> turn-based call with typed / quick replies.
-        void startTurnBasedCall(target, `${microphoneErrorMessage(error)} Type a reply or tap a quick reply.`);
+        console.warn('Microphone unavailable:', microphoneErrorMessage(error));
+        void startTurnBasedCall(target, 'Mic unavailable – switched to text.');
         return;
       }
 
@@ -883,12 +904,12 @@ export const Tab1CallingAgent: React.FC<Tab1CallingAgentProps> = ({
       const ws = new WebSocket(`${proto}//${window.location.host}/api/live-call`);
       wsRef.current = ws;
 
-      // No agent audio within 6 s -> Plan B.
+      // No agent audio within 8 s -> Plan B (fallbackToTurnBased closes the socket and stops the mic).
       clearLiveWatchdog();
       liveWatchdogRef.current = window.setTimeout(() => {
         liveWatchdogRef.current = null;
-        if (!liveAudioSeenRef.current && wsRef.current === ws) fallbackToTurnBased('Gemini Live is slow, switched to turn-based.');
-      }, 6000);
+        if (!liveAudioSeenRef.current && wsRef.current === ws) fallbackToTurnBased('Live unavailable – switched to text.');
+      }, 8000);
 
       ws.onopen = () => {
         ws.send(JSON.stringify({ type: 'start', patient: patientPayload(target) }));
